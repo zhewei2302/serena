@@ -1,0 +1,224 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Microsoft.CodeAnalysis.Remote.Razor</name>
+    </assembly>
+    <members>
+        <member name="F:Microsoft.CodeAnalysis.Remote.Razor.Constants.ExternalAccessServerName">
+            <summary>
+            The name we use for the "server" in cohosting, which is not really an LSP server, but we use it for telemetry to distinguish events
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.DocumentMapping.IDocumentMappingServiceExtensions.MapToHostDocumentUriAndRangeAsync(Microsoft.CodeAnalysis.Razor.DocumentMapping.IDocumentMappingService,Microsoft.CodeAnalysis.Remote.Razor.ProjectSystem.RemoteDocumentSnapshot,System.Uri,Microsoft.CodeAnalysis.Text.LinePositionSpan,System.Threading.CancellationToken)">
+            <summary>
+            Maps a range in the specified generated document uri to a range in the Razor document that owns the
+            generated document. If the uri passed in is not for a generated document, or the range cannot be mapped
+            for some other reason, the original passed in range is returned unchanged.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.DocumentMapping.IDocumentMappingServiceExtensions.MapToHostDocumentUriAndRangeAsync(Microsoft.CodeAnalysis.Razor.DocumentMapping.IDocumentMappingService,Microsoft.CodeAnalysis.Remote.Razor.ProjectSystem.RemoteDocumentSnapshot,System.Uri,Roslyn.LanguageServer.Protocol.Range,System.Threading.CancellationToken)">
+            <summary>
+            Maps a range in the specified generated document uri to a range in the Razor document that owns the
+            generated document. If the uri passed in is not for a generated document, or the range cannot be mapped
+            for some other reason, the original passed in range is returned unchanged.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.RemoteHoverService.ConvertHover(Roslyn.LanguageServer.Protocol.Hover)">
+            <summary>
+             Converts a <see cref="T:Roslyn.LanguageServer.Protocol.Hover"/> to a <see cref="T:Roslyn.LanguageServer.Protocol.Hover"/>.
+            </summary>
+            <remarks>
+             Once Razor moves wholly over to Roslyn.LanguageServer.Protocol, this method can be removed.
+            </remarks>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Razor.RemoteMEFInitializationService">
+            <summary>
+            A special service that is used to initialize the MEF composition for Razor in the remote host.
+            </summary>
+            <remarks>
+            It's special because it doesn't use MEF. Nor can it use anything else really.
+            </remarks>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Razor.IRazorBrokeredServiceInterceptor">
+            <summary>
+            An abstraction to avoid calling the static <see cref="T:Microsoft.CodeAnalysis.ExternalAccess.Razor.Api.RazorBrokeredServiceImplementation"/> helper defined in Roslyn.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.Logging.RemoteLoggerFactory.SetTargetLoggerFactory(Microsoft.CodeAnalysis.Razor.Logging.ILoggerFactory)">
+            <summary>
+            Sets the logger factory to use in OOP
+            </summary>
+            <returns>True if the factory was set</returns>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Razor.ProjectSystem.GeneratorRunResult">
+            <summary>
+            Wraps the host outputs of the Razor source generator, and the <see cref="T:Microsoft.CodeAnalysis.Project"/> that produced them.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.ProjectSystem.GeneratorRunResult.#ctor(Microsoft.NET.Sdk.Razor.SourceGenerators.RazorGeneratorResult,Microsoft.CodeAnalysis.Project)">
+            <summary>
+            Wraps the host outputs of the Razor source generator, and the <see cref="T:Microsoft.CodeAnalysis.Project"/> that produced them.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Razor.RazorBrokeredServiceBase.FactoryBase`1">
+            <remarks>
+            Implementors of <see cref="T:Microsoft.ServiceHub.Framework.IServiceHubServiceFactory" /> (and thus this class) MUST provide a parameterless constructor
+            or ServiceHub will fail to construct them.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.RemoteMefComposition.GetConfigurationAsync(System.Threading.CancellationToken)">
+            <summary>
+             Gets a <see cref="T:Microsoft.VisualStudio.Composition.CompositionConfiguration"/> built from <see cref="F:Microsoft.CodeAnalysis.Remote.Razor.RemoteMefComposition.Assemblies"/>. Note that the
+             same <see cref="T:Microsoft.VisualStudio.Composition.CompositionConfiguration"/> instance is returned for subsequent calls to this method.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.RemoteMefComposition.GetSharedExportProviderAsync(System.Threading.CancellationToken)">
+            <summary>
+             Gets an <see cref="T:Microsoft.VisualStudio.Composition.ExportProvider"/> for the shared MEF composition. Note that the
+             same <see cref="T:Microsoft.VisualStudio.Composition.ExportProvider"/> instance is returned for subsequent calls to this method.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.RemoteMefComposition.CreateExportProviderAsync(System.String,System.Threading.CancellationToken)">
+            <summary>
+             Creates a new MEF composition and returns an <see cref="T:Microsoft.VisualStudio.Composition.ExportProvider"/>. The catalog and configuration
+             are reused for subsequent calls to this method.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.RemoteWorkspaceProvider.GetWorkspace">
+             <summary>
+             Gets the remote workspace used in the Roslyn OOP process
+             </summary>
+             <remarks>
+             Normally getting a workspace is possible from a document, project or solution snapshot but in the Roslyn OOP
+             process that is explicitly denied via an exception. This method serves as a workaround when a workspace is
+             needed (eg, the Go To Definition API requires one).
+            
+             This should be used sparingly and carefully, and no updates should be made to the workspace.
+             </remarks>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Razor.RemoteWorkspaceProvider.TestAccessor">
+            <summary>
+            This is crap, but our EA can not have IVT to Roslyn's servicehub project, because it would cause a
+            circular reference. This project does have IVT though, so we have to put this code here. Needless
+            to say, this should only be called by tests.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.Razor.RemoteTagHelperResolver.s_configurationNameToFactoryMap">
+            <summary>
+            A map of configuration names to <see cref="T:Microsoft.CodeAnalysis.Razor.ProjectEngineHost.IProjectEngineFactory"/> instances.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Razor.ThrowingErrorLoggerProvider">
+            <summary>
+            An error logger provider that provides a logger that simple throws an exception for any LogError call.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR._0_is_not_a_Razor_file_path">
+            <summary>'{0}' is not a Razor file path.</summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Format0_is_not_a_Razor_file_path(System.Object)">
+            <summary>'{0}' is not a Razor file path.</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Document_is_not_a_Razor_document">
+            <summary>Document is not a Razor document.</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Project_does_not_contain_any_Razor_documents">
+            <summary>Project does not contain any Razor documents.</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Document_does_not_belong_to_this_project">
+            <summary>Document does not belong to this project.</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Project_does_not_belong_to_this_solution">
+            <summary>Project does not belong to this solution.</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Generator_run_result_did_not_contain_a_code_document">
+            <summary>Generator run result did not contain a code document for '{0}'.</summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.FormatGenerator_run_result_did_not_contain_a_code_document(System.Object)">
+            <summary>Generator run result did not contain a code document for '{0}'.</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Couldnt_get_the_source_generated_document_for_hint_name">
+            <summary>Couldn't get the source generated document for hint name '{0}' that we got from the generator run result.</summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.FormatCouldnt_get_the_source_generated_document_for_hint_name(System.Object)">
+            <summary>Couldn't get the source generated document for hint name '{0}' that we got from the generator run result.</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Couldnt_get_a_source_generator_run_result">
+            <summary>Couldn't get a source generator run result for project '{0}'.</summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.FormatCouldnt_get_a_source_generator_run_result(System.Object)">
+            <summary>Couldn't get a source generator run result for project '{0}'.</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Razor_source_generator_reference_incorrect">
+            <summary>Razor source generator is referenced from '{0}' but we are expecting '{1}', for project '{2}'.</summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.FormatRazor_source_generator_reference_incorrect(System.Object,System.Object,System.Object)">
+            <summary>Razor source generator is referenced from '{0}' but we are expecting '{1}', for project '{2}'.</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Razor_source_generator_is_not_referenced">
+            <summary>Razor source generator is not referenced or no run result found for project '{0}'.</summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.FormatRazor_source_generator_is_not_referenced(System.Object)">
+            <summary>Razor source generator is not referenced or no run result found for project '{0}'.</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Razor_source_generator_did_not_produce_a_host_output">
+            <summary>Razor source generator did not produce a host output for project '{0}': {1}</summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.FormatRazor_source_generator_did_not_produce_a_host_output(System.Object,System.Object)">
+            <summary>Razor source generator did not produce a host output for project '{0}': {1}</summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.Razor_source_generator_host_output_is_not_RazorGeneratorResult">
+            <summary>Razor source generator host output is not of type RazorGeneratorResult for project '{0}': {1}</summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.Resources.SR.FormatRazor_source_generator_host_output_is_not_RazorGeneratorResult(System.Object,System.Object)">
+            <summary>Razor source generator host output is not of type RazorGeneratorResult for project '{0}': {1}</summary>
+        </member>
+        <member name="M:Microsoft.VisualStudio.Razor.Telemetry.TelemetryReporter.GetModifiedFaultParameters(System.Exception)">
+            <summary>
+            Returns values that should be set to (failureParameter1, failureParameter2) when reporting a fault.
+            Those values represent the blamed stack frame module and method name.
+            </summary>
+        </member>
+        <member name="M:Microsoft.VisualStudio.Razor.Telemetry.TelemetryReporter.TryGetFirstRazorMethodOnCallStack(System.Exception,System.Func{System.Reflection.MethodBase,System.Boolean},System.Reflection.MethodBase@)">
+            <summary>
+            Gets the first stack frame in exception stack that originates from razor code based on namespace
+            </summary>
+            <param name="exception">The <see cref="T:System.Exception"/> containg the stack.</param>
+            <param name="shouldSkipMethod">Optional predicate that determines whether a particular method should be skipped.</param>
+            <param name="result">The result</param>
+        </member>
+        <member name="F:Microsoft.VisualStudio.Razor.Telemetry.TelemetryReporter.TelemetrySessionManager._requestCounters">
+            <summary>
+            Store request counters in a concurrent dictionary as non-mutating LSP requests can
+            run alongside other non-mutating requests.
+            </summary>
+        </member>
+        <member name="T:Microsoft.VisualStudio.Razor.Telemetry.AggregatingTelemetryLog">
+            <summary>
+            Provides a wrapper around the VSTelemetry histogram APIs to support aggregated telemetry. Each instance
+            of this class corresponds to a specific FunctionId operation and can support aggregated values for each
+            metric name logged.
+            </summary>
+        </member>
+        <member name="M:Microsoft.VisualStudio.Razor.Telemetry.AggregatingTelemetryLog.#ctor(Microsoft.VisualStudio.Razor.Telemetry.TelemetryReporter,System.String,System.Double[])">
+            <summary>
+            Creates a new aggregating telemetry log
+            </summary>
+            <param name="reporter">Telemetry reporter for posting events</param>
+            <param name="name">the name of the event, not fully qualified.</param>
+            <param name="bucketBoundaries">Optional values indicating bucket boundaries in milliseconds. If not specified, 
+            all histograms created will use the default histogram configuration</param>
+        </member>
+        <member name="M:Microsoft.VisualStudio.Razor.Telemetry.AggregatingTelemetryLog.Log(System.String,System.Int32,System.String)">
+            <summary>
+            Adds aggregated information for the <paramref name="histogramKey"/> and <paramref name="value"/>. Method name is tacked onto
+            to the first <paramref name="histogramKey"/> used for convenience.
+            </summary>
+        </member>
+        <member name="T:Microsoft.VisualStudio.Razor.Telemetry.AggregatingTelemetryLogManager">
+            <summary>
+            Manages creation and obtaining aggregated telemetry logs.
+            </summary>
+        </member>
+    </members>
+</doc>

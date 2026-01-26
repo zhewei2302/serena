@@ -1,5 +1,8 @@
 """
 CSharp Language Server using Microsoft.CodeAnalysis.LanguageServer (Official Roslyn-based LSP server)
+
+This module supports Razor (.razor, .cshtml) files through the Razor extension when available.
+Razor support can be enabled by setting ls_specific_settings["csharp"]["enable_razor"] = True.
 """
 
 import json
@@ -29,6 +32,9 @@ from solidlsp.util.zip import SafeZipExtractor
 from .common import RuntimeDependency, RuntimeDependencyCollection
 
 log = logging.getLogger(__name__)
+
+# Path to bundled Razor extension files (relative to this module)
+_BUNDLED_RAZOR_EXTENSION_DIR = Path(__file__).parent / "razor_extension"
 
 _RUNTIME_DEPENDENCIES = [
     RuntimeDependency(
@@ -191,6 +197,21 @@ class CSharpLanguageServer(SolidLanguageServer):
     Provides C# specific instantiation of the LanguageServer class using `Microsoft.CodeAnalysis.LanguageServer`,
     the official Roslyn-based language server from Microsoft.
 
+    ## Razor Support
+
+    This language server supports Razor (.razor, .cshtml) files through the Razor extension.
+    Razor support is enabled by default if the razor_extension files are available.
+
+    To disable Razor support, set ls_specific_settings["csharp"]["enable_razor"] = False.
+
+    The Razor extension provides:
+    - IntelliSense for Razor syntax
+    - Go to Definition for components and C# code
+    - Hover information
+    - Diagnostics for Razor files
+
+    ## Runtime Dependency Overrides
+
     You can pass a list of runtime dependency overrides in ls_specific_settings["csharp"]["runtime_dependencies"]. This is a list of
     dicts, each containing at least the "id" key, and optionally "platform_id" to uniquely identify the dependency to override.
     For example, to override the URL of the .NET runtime on windows-x64, add the entry:
@@ -235,6 +256,13 @@ class CSharpLanguageServer(SolidLanguageServer):
             self._repository_root_path = repository_root_path
             self._dotnet_path, self._language_server_path = self._ensure_server_installed()
 
+            # Check if Razor support is enabled
+            self._enable_razor = cast(bool, custom_settings.get("enable_razor", True))
+            self._razor_extension_dir: Path | None = None
+
+            if self._enable_razor:
+                self._razor_extension_dir = self._ensure_razor_extension_installed()
+
         def create_launch_command(self) -> list[str] | str:
             # Find solution or project file
             solution_or_project = find_solution_or_project_file(self._repository_root_path)
@@ -246,6 +274,24 @@ class CSharpLanguageServer(SolidLanguageServer):
             # Build command using dotnet directly
             cmd = [self._dotnet_path, self._language_server_path, "--logLevel=Information", f"--extensionLogDirectory={log_dir}", "--stdio"]
 
+            # Add Razor extension parameters if available
+            if self._razor_extension_dir and self._razor_extension_dir.exists():
+                razor_extension_dll = self._razor_extension_dir / "Microsoft.VisualStudioCode.RazorExtension.dll"
+                razor_compiler_dll = self._razor_extension_dir / "Microsoft.CodeAnalysis.Razor.Compiler.dll"
+                razor_design_time_targets = self._razor_extension_dir / "Targets" / "Microsoft.NET.Sdk.Razor.DesignTime.targets"
+
+                if razor_extension_dll.exists():
+                    cmd.append(f"--extension={razor_extension_dll}")
+                    log.info(f"Razor extension enabled: {razor_extension_dll}")
+
+                if razor_compiler_dll.exists():
+                    cmd.append(f"--razorSourceGenerator={razor_compiler_dll}")
+                    log.debug(f"Razor source generator: {razor_compiler_dll}")
+
+                if razor_design_time_targets.exists():
+                    cmd.append(f"--razorDesignTimePath={razor_design_time_targets}")
+                    log.debug(f"Razor design time targets: {razor_design_time_targets}")
+
             # The language server will discover the solution/project from the workspace root
             if solution_or_project:
                 log.info(f"Found solution/project file: {solution_or_project}")
@@ -255,6 +301,47 @@ class CSharpLanguageServer(SolidLanguageServer):
             log.debug(f"Language server command: {' '.join(cmd)}")
 
             return cmd
+
+        def _ensure_razor_extension_installed(self) -> Path | None:
+            """
+            Ensure Razor extension files are available in the language server resources directory.
+            Returns the path to the Razor extension directory, or None if not available.
+            """
+            razor_dir = Path(self._ls_resources_dir) / "RazorExtension"
+            razor_extension_dll = razor_dir / "Microsoft.VisualStudioCode.RazorExtension.dll"
+
+            # Check if already installed
+            if razor_extension_dll.exists():
+                log.info(f"Using cached Razor extension from {razor_dir}")
+                return razor_dir
+
+            # Check if bundled Razor extension is available
+            if not _BUNDLED_RAZOR_EXTENSION_DIR.exists():
+                log.warning(
+                    f"Razor extension not found at {_BUNDLED_RAZOR_EXTENSION_DIR}. "
+                    "Razor support will be disabled. To enable Razor support, ensure the "
+                    "razor_extension directory exists with the required DLLs."
+                )
+                return None
+
+            bundled_razor_dll = _BUNDLED_RAZOR_EXTENSION_DIR / "Microsoft.VisualStudioCode.RazorExtension.dll"
+            if not bundled_razor_dll.exists():
+                log.warning(
+                    f"Bundled Razor extension DLL not found at {bundled_razor_dll}. "
+                    "Razor support will be disabled."
+                )
+                return None
+
+            # Copy bundled Razor extension to resources directory
+            log.info(f"Installing Razor extension from {_BUNDLED_RAZOR_EXTENSION_DIR} to {razor_dir}")
+            try:
+                razor_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(_BUNDLED_RAZOR_EXTENSION_DIR, razor_dir, dirs_exist_ok=True)
+                log.info(f"Successfully installed Razor extension to {razor_dir}")
+                return razor_dir
+            except Exception as e:
+                log.warning(f"Failed to install Razor extension: {e}. Razor support will be disabled.")
+                return None
 
         def _ensure_server_installed(self) -> tuple[str, str]:
             """
