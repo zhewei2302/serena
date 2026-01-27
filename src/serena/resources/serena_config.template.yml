@@ -63,6 +63,13 @@ ls_specific_settings: {}
 # (same entry as in project.yml) to the options.
 # Have a look at the docstring of the constructors of the LS implementations within solidlsp (e.g., for C# or PHP) to see which options are available.
 # No documentation on options means no options are available.
+#
+# Example for C# (using local development builds):
+# ls_specific_settings:
+#   csharp:
+#     local_language_server_path: "D:/GitHub/roslyn/artifacts/bin/Microsoft.CodeAnalysis.LanguageServer/Release/net10.0"
+#     local_razor_extension_path: "D:/GitHub/razor/artifacts/bin/Microsoft.AspNetCore.Razor.LanguageServer/Release/net10.0"
+#     enable_razor: true
 
 tool_timeout: 240
 # timeout, in seconds, after which tool executions are terminated
