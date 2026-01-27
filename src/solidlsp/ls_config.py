@@ -161,7 +161,7 @@ class Language(str, Enum):
                             path_patterns.append(f"*.{prefix}{base_pattern}{postfix}")
                 return FilenameMatcher(*path_patterns)
             case self.CSHARP | self.CSHARP_OMNISHARP:
-                return FilenameMatcher("*.cs")
+                return FilenameMatcher("*.cs", "*.cshtml", "*.razor")
             case self.RUST:
                 return FilenameMatcher("*.rs")
             case self.GO:
