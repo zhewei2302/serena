@@ -636,6 +636,7 @@ class SolidLanguageServer(ABC):
 
             version = 0
             language_id = self._get_language_id_for_file(relative_file_path)
+            log.debug("Opening file %s with languageId=%s", relative_file_path, language_id)
             self.open_file_buffers[uri] = LSPFileBuffer(
                 uri=uri, contents=contents, encoding=self._encoding, version=version, language_id=language_id, ref_count=1
             )
