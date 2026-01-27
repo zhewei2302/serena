@@ -1,0 +1,23 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Page with code";
+}
+
+<h1>@Message</h1>
+<p>Count: @Counter</p>
+
+@functions {
+    public string Message { get; set; } = "Hello from cshtml!";
+    public int Counter { get; set; } = 0;
+
+    public void IncrementCounter()
+    {
+        Counter++;
+    }
+
+    public string GetGreeting(string name)
+    {
+        return $"Hello, {name}!";
+    }
+}
