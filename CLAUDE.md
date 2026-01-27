@@ -6,20 +6,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Essential Commands (use these exact commands):**
 - `uv run poe format` - Format code (BLACK + RUFF) - ONLY allowed formatting command
-- `uv run poe type-check` - Run mypy type checking - ONLY allowed type checking command  
+- `uv run poe type-check` - Run mypy type checking - ONLY allowed type checking command
 - `uv run poe test` - Run tests with default markers (excludes java/rust by default)
 - `uv run poe test -m "python or go"` - Run specific language tests
 - `uv run poe test -m vue` - Run Vue tests
 - `uv run poe lint` - Check code style without fixing
 
+**Running Specific Tests:**
+- `uv run pytest test/solidlsp/python/test_python_basic.py -v` - Run single test file
+- `uv run pytest test/solidlsp/python/test_python_basic.py::test_function_name -v` - Run single test
+- `uv run pytest test -k "pattern" -v` - Run tests matching pattern
+
 **Test Markers:**
 Available pytest markers for selective testing:
-- `python`, `go`, `java`, `rust`, `typescript`, `vue`, `php`, `perl`, `powershell`, `csharp`, `elixir`, `terraform`, `clojure`, `swift`, `bash`, `ruby`, `ruby_solargraph`
-- `snapshot` - for symbolic editing operation tests
+- Core: `python`, `go`, `java`, `rust`, `typescript`, `vue`, `php`, `perl`, `csharp`, `ruby`
+- Additional: `clojure`, `elixir`, `terraform`, `swift`, `bash`, `powershell`, `zig`, `lua`, `nix`, `dart`, `erlang`, `scala`, `haskell`, `fortran`, `julia`, `yaml`, `toml`, `markdown`, `al`, `fsharp`, `rego`, `pascal`, `matlab`
+- Special: `snapshot` (symbolic editing tests), `slow` (tests with long startup times)
 
 **Project Management:**
 - `uv run serena-mcp-server` - Start MCP server from project root
-- `uv run index-project` - Index project for faster tool performance
+- `uv run index-project` - Index project for faster tool performance (deprecated)
+
+**Environment Setup:**
+```bash
+uv venv                                           # Create virtual environment
+source .venv/bin/activate                         # Activate (Linux/macOS/Git Bash)
+.venv\Scripts\activate.bat                        # Activate (Windows cmd)
+uv pip install --all-extras -r pyproject.toml -e . # Install with all extras
+```
 
 **Always run format, type-check, and test before completing any task.**
 
@@ -87,6 +101,7 @@ Each supported language has:
 - Symbolic editing operations have snapshot tests
 - Integration tests in `test_serena_agent.py`
 - Test repositories provide realistic symbol structures
+- Shared fixtures defined in `test/conftest.py` (e.g., `create_ls()` for language server instances)
 
 ## Configuration Hierarchy
 
@@ -101,14 +116,16 @@ Configuration is loaded from (in order of precedence):
 - **Symbol-based editing** - Uses LSP for precise code manipulation
 - **Caching strategy** - Reduces language server overhead
 - **Error recovery** - Automatic language server restart on crashes
-- **Multi-language support** - 19 languages with LSP integration (including Vue)
+- **Multi-language support** - 30+ languages with LSP integration
 - **MCP protocol** - Exposes tools to AI agents via Model Context Protocol
 - **Async operation** - Non-blocking language server interactions
+- **DependencyProvider pattern** - All language servers use this for dependency management and launch command creation
 
 ## Working with the Codebase
 
-- Project uses Python 3.11 with `uv` for dependency management
+- Project uses Python 3.11 (requires `>=3.11, <3.12`) with `uv` for dependency management
 - Strict typing with mypy, formatted with black + ruff
 - Language servers run as separate processes with LSP communication
-- Memory system enables persistent project knowledge
+- Memory system enables persistent project knowledge in `.serena/memories/`
 - Context/mode system allows workflow customization
+- Run tools locally without LLM using `scripts/demo_run_tools.py`
