@@ -429,6 +429,113 @@ class CSharpLanguageServer(SolidLanguageServer):
                 self._razor_extension_dir = self._ensure_razor_extension_installed()
 
         @staticmethod
+        def _load_local_cache_metadata(meta_file: Path) -> dict[str, Any] | None:
+            """Load local cache metadata from JSON file."""
+            if not meta_file.exists():
+                return None
+            try:
+                with open(meta_file, encoding="utf-8") as f:
+                    return cast(dict[str, Any], json.load(f))
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning(f"Failed to load cache metadata from {meta_file}: {e}")
+                return None
+
+        @staticmethod
+        def _save_local_cache_metadata(
+            meta_file: Path,
+            source_path: Path,
+            source_mtime: float,
+        ) -> None:
+            """Save local cache metadata to JSON file."""
+            import time
+
+            metadata = {
+                "source_path": str(source_path),
+                "source_mtime": source_mtime,
+                "copied_at": time.time(),
+            }
+            try:
+                with open(meta_file, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2)
+            except OSError as e:
+                log.warning(f"Failed to save cache metadata to {meta_file}: {e}")
+
+        def _is_local_cache_up_to_date(
+            self,
+            source_path: Path,
+            cache_dir: Path,
+            meta_file: Path,
+            main_dll_name: str,
+        ) -> bool:
+            """
+            Check if the local cache is up-to-date.
+
+            Returns True if:
+            - Cache directory exists
+            - Metadata file exists and is valid
+            - Source path matches
+            - Main DLL modification time matches
+            """
+            if not cache_dir.exists():
+                return False
+
+            metadata = self._load_local_cache_metadata(meta_file)
+            if metadata is None:
+                return False
+
+            # Check if source path matches
+            if metadata.get("source_path") != str(source_path):
+                log.debug(f"Cache source path mismatch: {metadata.get('source_path')} != {source_path}")
+                return False
+
+            # Check main DLL modification time
+            main_dll = source_path / main_dll_name
+            if not main_dll.exists():
+                return False
+
+            current_mtime = main_dll.stat().st_mtime
+            cached_mtime = metadata.get("source_mtime")
+            if cached_mtime is None or current_mtime != cached_mtime:
+                log.debug(f"Cache mtime mismatch: {cached_mtime} != {current_mtime}")
+                return False
+
+            return True
+
+        def _copy_local_to_cache(
+            self,
+            source_path: Path,
+            cache_dir: Path,
+            meta_file: Path,
+            main_dll_name: str,
+        ) -> Path | None:
+            """
+            Copy local directory to cache.
+
+            Returns the cache directory path on success, None on failure.
+            """
+            main_dll = source_path / main_dll_name
+            if not main_dll.exists():
+                log.warning(f"Main DLL not found: {main_dll}")
+                return None
+
+            try:
+                # Remove existing cache directory if it exists
+                if cache_dir.exists():
+                    shutil.rmtree(cache_dir)
+
+                # Copy the directory
+                shutil.copytree(source_path, cache_dir)
+
+                # Save metadata
+                source_mtime = main_dll.stat().st_mtime
+                self._save_local_cache_metadata(meta_file, source_path, source_mtime)
+
+                return cache_dir
+            except Exception as e:
+                log.warning(f"Failed to copy local directory to cache: {e}")
+                return None
+
+        @staticmethod
         def _detect_system_dotnet_major_version() -> str | None:
             """
             Detect the highest .NET runtime major version installed on the system.
@@ -554,13 +661,25 @@ class CSharpLanguageServer(SolidLanguageServer):
             # Check for local Razor extension path override
             local_razor_path = self._custom_settings.get("local_razor_extension_path")
             if local_razor_path and isinstance(local_razor_path, str):
-                local_razor_dir = Path(local_razor_path)
-                local_razor_dll = local_razor_dir / "Microsoft.VisualStudioCode.RazorExtension.dll"
-                if local_razor_dll.exists():
-                    log.info(f"Using local Razor extension from {local_razor_dir}")
-                    return local_razor_dir
+                source_path = Path(local_razor_path)
+                main_dll = "Microsoft.VisualStudioCode.RazorExtension.dll"
+                if (source_path / main_dll).exists():
+                    cache_dir = Path(self._ls_resources_dir) / "local-razor"
+                    meta_file = Path(self._ls_resources_dir) / "local-razor.meta.json"
+
+                    if not self._is_local_cache_up_to_date(source_path, cache_dir, meta_file, main_dll):
+                        log.info(f"Copying local Razor extension to cache from {local_razor_path}")
+                        cached_path = self._copy_local_to_cache(source_path, cache_dir, meta_file, main_dll)
+                        if cached_path is None:
+                            # Fallback to direct use if copy fails
+                            log.warning("Falling back to direct use of local Razor extension")
+                            return source_path
+                    else:
+                        log.info(f"Using cached local Razor extension (source: {local_razor_path})")
+
+                    return cache_dir
                 else:
-                    log.warning(f"Local Razor extension path specified but DLL not found: {local_razor_dll}")
+                    log.warning(f"Local Razor extension path specified but DLL not found: {source_path / main_dll}")
 
             razor_dir = Path(self._ls_resources_dir) / "RazorExtension"
             razor_extension_dll = razor_dir / "Microsoft.VisualStudioCode.RazorExtension.dll"
@@ -606,17 +725,34 @@ class CSharpLanguageServer(SolidLanguageServer):
             # Check for local language server path override
             local_ls_path = self._custom_settings.get("local_language_server_path")
             if local_ls_path and isinstance(local_ls_path, str):
-                local_ls_dll = Path(local_ls_path) / "Microsoft.CodeAnalysis.LanguageServer.dll"
-                if local_ls_dll.exists():
-                    log.info(f"Using local language server from {local_ls_path}")
+                source_path = Path(local_ls_path)
+                main_dll = "Microsoft.CodeAnalysis.LanguageServer.dll"
+                if (source_path / main_dll).exists():
+                    cache_dir = Path(self._ls_resources_dir) / "local-roslyn"
+                    meta_file = Path(self._ls_resources_dir) / "local-roslyn.meta.json"
+
+                    if not self._is_local_cache_up_to_date(source_path, cache_dir, meta_file, main_dll):
+                        log.info(f"Copying local language server to cache from {local_ls_path}")
+                        cached_path = self._copy_local_to_cache(source_path, cache_dir, meta_file, main_dll)
+                        if cached_path is None:
+                            # Fallback to direct use if copy fails
+                            log.warning("Falling back to direct use of local language server")
+                            system_dotnet = shutil.which("dotnet")
+                            if system_dotnet:
+                                return system_dotnet, str(source_path / main_dll)
+                            else:
+                                log.warning("Local language server specified but dotnet not found in PATH")
+                    else:
+                        log.info(f"Using cached local language server (source: {local_ls_path})")
+
                     # Use system dotnet for local builds
                     system_dotnet = shutil.which("dotnet")
                     if system_dotnet:
-                        return system_dotnet, str(local_ls_dll)
+                        return system_dotnet, str(cache_dir / main_dll)
                     else:
                         log.warning("Local language server specified but dotnet not found in PATH")
                 else:
-                    log.warning(f"Local language server path specified but DLL not found: {local_ls_dll}")
+                    log.warning(f"Local language server path specified but DLL not found: {source_path / main_dll}")
 
             runtime_dependency_overrides = cast(list[dict[str, Any]], self._custom_settings.get("runtime_dependencies", []))
 

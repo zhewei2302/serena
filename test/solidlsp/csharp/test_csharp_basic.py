@@ -312,3 +312,214 @@ class TestCSharpSolutionProjectOpening:
 
         # Verify the file actually exists
         assert os.path.exists(result)
+
+
+@pytest.mark.csharp
+class TestLocalCacheLogic:
+    """Tests for the local language server/razor extension caching logic."""
+
+    def test_cache_metadata_save_and_load(self):
+        """Test saving and loading cache metadata."""
+        from solidlsp.language_servers.csharp_language_server import CSharpLanguageServer
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            meta_file = temp_path / "test.meta.json"
+            source_path = temp_path / "source"
+            source_path.mkdir()
+
+            # Create a dummy DLL to get a modification time
+            dll_file = source_path / "test.dll"
+            dll_file.touch()
+            source_mtime = dll_file.stat().st_mtime
+
+            # Save metadata
+            CSharpLanguageServer.DependencyProvider._save_local_cache_metadata(meta_file, source_path, source_mtime)
+
+            # Load metadata
+            metadata = CSharpLanguageServer.DependencyProvider._load_local_cache_metadata(meta_file)
+            assert metadata is not None
+            assert metadata["source_path"] == str(source_path)
+            assert metadata["source_mtime"] == source_mtime
+            assert "copied_at" in metadata
+
+    def test_cache_metadata_load_nonexistent(self):
+        """Test loading metadata from a nonexistent file returns None."""
+        from solidlsp.language_servers.csharp_language_server import CSharpLanguageServer
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            meta_file = temp_path / "nonexistent.meta.json"
+
+            metadata = CSharpLanguageServer.DependencyProvider._load_local_cache_metadata(meta_file)
+            assert metadata is None
+
+    def test_cache_metadata_load_corrupted(self):
+        """Test loading corrupted metadata returns None."""
+        from solidlsp.language_servers.csharp_language_server import CSharpLanguageServer
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            meta_file = temp_path / "corrupted.meta.json"
+
+            # Write invalid JSON
+            with open(meta_file, "w") as f:
+                f.write("not valid json {{{")
+
+            metadata = CSharpLanguageServer.DependencyProvider._load_local_cache_metadata(meta_file)
+            assert metadata is None
+
+    @patch("solidlsp.language_servers.csharp_language_server.CSharpLanguageServer.DependencyProvider._ensure_dotnet_runtime")
+    @patch("solidlsp.language_servers.csharp_language_server.CSharpLanguageServer.DependencyProvider._ensure_language_server")
+    @patch("shutil.which")
+    def test_is_local_cache_up_to_date_fresh_cache(self, mock_which, mock_ensure_ls, mock_ensure_dotnet):
+        """Test that cache is considered up-to-date when DLL hasn't changed."""
+        from solidlsp.language_servers.csharp_language_server import CSharpLanguageServer
+        from solidlsp.settings import SolidLSPSettings
+
+        mock_which.return_value = "/usr/bin/dotnet"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            # Create source directory with DLL
+            source_path = temp_path / "source"
+            source_path.mkdir()
+            main_dll = source_path / "Microsoft.CodeAnalysis.LanguageServer.dll"
+            main_dll.touch()
+            source_mtime = main_dll.stat().st_mtime
+
+            # Create cache directory
+            cache_dir = temp_path / "cache"
+            cache_dir.mkdir()
+            (cache_dir / "Microsoft.CodeAnalysis.LanguageServer.dll").touch()
+
+            # Create metadata file
+            meta_file = temp_path / "cache.meta.json"
+            CSharpLanguageServer.DependencyProvider._save_local_cache_metadata(meta_file, source_path, source_mtime)
+
+            # Create DependencyProvider instance
+            mock_settings = Mock(spec=SolidLSPSettings)
+            mock_settings.ls_resources_dir = str(temp_path)
+            mock_settings.project_data_relative_path = "project_data"
+
+            custom_settings = {"local_language_server_path": str(source_path)}
+
+            provider = CSharpLanguageServer.DependencyProvider(
+                custom_settings=cast(SolidLSPSettings.CustomLSSettings, custom_settings),
+                ls_resources_dir=str(temp_path / "resources"),
+                solidlsp_settings=mock_settings,
+                repository_root_path=str(temp_path),
+            )
+
+            # Test that cache is up-to-date
+            result = provider._is_local_cache_up_to_date(source_path, cache_dir, meta_file, "Microsoft.CodeAnalysis.LanguageServer.dll")
+            assert result is True
+
+    @patch("solidlsp.language_servers.csharp_language_server.CSharpLanguageServer.DependencyProvider._ensure_dotnet_runtime")
+    @patch("solidlsp.language_servers.csharp_language_server.CSharpLanguageServer.DependencyProvider._ensure_language_server")
+    @patch("shutil.which")
+    def test_is_local_cache_up_to_date_stale_cache(self, mock_which, mock_ensure_ls, mock_ensure_dotnet):
+        """Test that cache is considered stale when DLL modification time changes."""
+        import time
+
+        from solidlsp.language_servers.csharp_language_server import CSharpLanguageServer
+        from solidlsp.settings import SolidLSPSettings
+
+        mock_which.return_value = "/usr/bin/dotnet"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            # Create source directory with DLL
+            source_path = temp_path / "source"
+            source_path.mkdir()
+            main_dll = source_path / "Microsoft.CodeAnalysis.LanguageServer.dll"
+            main_dll.touch()
+            old_mtime = main_dll.stat().st_mtime
+
+            # Create cache directory
+            cache_dir = temp_path / "cache"
+            cache_dir.mkdir()
+            (cache_dir / "Microsoft.CodeAnalysis.LanguageServer.dll").touch()
+
+            # Create metadata file with old mtime
+            meta_file = temp_path / "cache.meta.json"
+            CSharpLanguageServer.DependencyProvider._save_local_cache_metadata(meta_file, source_path, old_mtime)
+
+            # Simulate DLL rebuild by modifying it
+            time.sleep(0.01)  # Ensure time difference
+            main_dll.write_text("updated content")
+
+            # Create DependencyProvider instance
+            mock_settings = Mock(spec=SolidLSPSettings)
+            mock_settings.ls_resources_dir = str(temp_path)
+            mock_settings.project_data_relative_path = "project_data"
+
+            custom_settings = {"local_language_server_path": str(source_path)}
+
+            provider = CSharpLanguageServer.DependencyProvider(
+                custom_settings=cast(SolidLSPSettings.CustomLSSettings, custom_settings),
+                ls_resources_dir=str(temp_path / "resources"),
+                solidlsp_settings=mock_settings,
+                repository_root_path=str(temp_path),
+            )
+
+            # Test that cache is stale
+            result = provider._is_local_cache_up_to_date(source_path, cache_dir, meta_file, "Microsoft.CodeAnalysis.LanguageServer.dll")
+            assert result is False
+
+    @patch("solidlsp.language_servers.csharp_language_server.CSharpLanguageServer.DependencyProvider._ensure_dotnet_runtime")
+    @patch("solidlsp.language_servers.csharp_language_server.CSharpLanguageServer.DependencyProvider._ensure_language_server")
+    @patch("shutil.which")
+    def test_copy_local_to_cache(self, mock_which, mock_ensure_ls, mock_ensure_dotnet):
+        """Test copying local directory to cache."""
+        from solidlsp.language_servers.csharp_language_server import CSharpLanguageServer
+        from solidlsp.settings import SolidLSPSettings
+
+        mock_which.return_value = "/usr/bin/dotnet"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            # Create source directory with files
+            source_path = temp_path / "source"
+            source_path.mkdir()
+            main_dll = source_path / "Microsoft.CodeAnalysis.LanguageServer.dll"
+            main_dll.write_text("dll content")
+            (source_path / "other.dll").write_text("other content")
+            (source_path / "subdir").mkdir()
+            (source_path / "subdir" / "nested.dll").write_text("nested content")
+
+            cache_dir = temp_path / "cache"
+            meta_file = temp_path / "cache.meta.json"
+
+            # Create DependencyProvider instance
+            mock_settings = Mock(spec=SolidLSPSettings)
+            mock_settings.ls_resources_dir = str(temp_path)
+            mock_settings.project_data_relative_path = "project_data"
+
+            custom_settings = {"local_language_server_path": str(source_path)}
+
+            provider = CSharpLanguageServer.DependencyProvider(
+                custom_settings=cast(SolidLSPSettings.CustomLSSettings, custom_settings),
+                ls_resources_dir=str(temp_path / "resources"),
+                solidlsp_settings=mock_settings,
+                repository_root_path=str(temp_path),
+            )
+
+            # Copy to cache
+            result = provider._copy_local_to_cache(source_path, cache_dir, meta_file, "Microsoft.CodeAnalysis.LanguageServer.dll")
+
+            assert result is not None
+            assert result == cache_dir
+            assert cache_dir.exists()
+            assert (cache_dir / "Microsoft.CodeAnalysis.LanguageServer.dll").exists()
+            assert (cache_dir / "other.dll").exists()
+            assert (cache_dir / "subdir" / "nested.dll").exists()
+            assert meta_file.exists()
+
+            # Verify metadata content
+            metadata = CSharpLanguageServer.DependencyProvider._load_local_cache_metadata(meta_file)
+            assert metadata is not None
+            assert metadata["source_path"] == str(source_path)
