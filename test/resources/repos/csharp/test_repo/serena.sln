@@ -10,7 +10,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "repos", "repos", "{E2326EEF
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "csharp", "csharp", "{C21E6CE7-177A-86D9-040F-A317F18B6DBF}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestProject", "test\resources\repos\csharp\test_repo\TestProject.csproj", "{A4D04E18-760A-73F9-3303-0542F6298C84}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestProject", "TestProject.csproj", "{A4D04E18-760A-73F9-3303-0542F6298C84}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

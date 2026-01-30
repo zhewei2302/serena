@@ -1,43 +1,41 @@
-using System;
+var builder = WebApplication.CreateBuilder(args);
 
-namespace TestProject
+// Add services to the container.
+builder.Services.AddRazorPages();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+app.UseStaticFiles();
+app.UseRouting();
+app.MapRazorPages();
+
+app.Run();
+
+// Test class for language server testing
+public class Calculator
 {
-    class Program
+    public int Add(int a, int b)
     {
-        static void Main(string[] args)
-        {
-            Console.WriteLine("Hello, World!");
-            
-            var calculator = new Calculator();
-            int result = calculator.Add(5, 3);
-            Console.WriteLine($"5 + 3 = {result}");
-        }
+        return a + b;
     }
-    
-    public class Calculator
+
+    public int Subtract(int a, int b)
     {
-        public int Add(int a, int b)
+        return a - b;
+    }
+
+    public int Multiply(int a, int b)
+    {
+        return a * b;
+    }
+
+    public double Divide(int a, int b)
+    {
+        if (b == 0)
         {
-            return a + b;
+            throw new DivideByZeroException("Cannot divide by zero");
         }
-        
-        public int Subtract(int a, int b)
-        {
-            return a - b;
-        }
-        
-        public int Multiply(int a, int b)
-        {
-            return a * b;
-        }
-        
-        public double Divide(int a, int b)
-        {
-            if (b == 0)
-            {
-                throw new DivideByZeroException("Cannot divide by zero");
-            }
-            return (double)a / b;
-        }
+        return (double)a / b;
     }
 }
