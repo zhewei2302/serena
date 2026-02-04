@@ -23,7 +23,7 @@ from serena.agent import (
 )
 from serena.config.context_mode import SerenaAgentContext
 from serena.config.serena_config import LanguageBackend, ModeSelectionDefinition
-from serena.constants import DEFAULT_CONTEXT, SERENA_LOG_FORMAT
+from serena.constants import DEFAULT_CONTEXT, DEFAULT_CORE_TOOLS, SERENA_LOG_FORMAT
 from serena.tools import Tool
 from serena.util.exception import show_fatal_exception_safe
 from serena.util.logging import MemoryLogHandler
@@ -250,12 +250,44 @@ class SerenaMCPFactory:
         assert self.agent is not None
         yield from self.agent.get_exposed_tool_instances()
 
+    def _get_core_tool_names(self) -> set[str]:
+        """Get the set of core tool names for deferred loading mode."""
+        if self.context.core_tools:
+            return set(self.context.core_tools)
+        return set(DEFAULT_CORE_TOOLS)
+
+    def _iter_core_tools(self) -> Iterator[Tool]:
+        """Iterate over core tools only (for deferred loading mode)."""
+        assert self.agent is not None
+        core_tool_names = self._get_core_tool_names()
+        for tool in self.agent.get_exposed_tool_instances():
+            if tool.get_name() in core_tool_names:
+                yield tool
+
+    def _get_deferred_tool_names(self) -> set[str]:
+        """Get the names of tools that are deferred (not loaded initially)."""
+        assert self.agent is not None
+        if not self.context.deferred_loading:
+            return set()
+        core_tool_names = self._get_core_tool_names()
+        all_tool_names = {tool.get_name() for tool in self.agent.get_exposed_tool_instances()}
+        return all_tool_names - core_tool_names
+
     # noinspection PyProtectedMember
     def _set_mcp_tools(self, mcp: FastMCP, openai_tool_compatible: bool = False) -> None:
         """Update the tools in the MCP server"""
         if mcp is not None:
             mcp._tool_manager._tools = {}
-            for tool in self._iter_tools():
+
+            # Determine which tools to load based on deferred_loading setting
+            if self.context.deferred_loading:
+                tools_to_load = list(self._iter_core_tools())
+                deferred_count = len(self._get_deferred_tool_names())
+                log.info(f"Deferred loading enabled: loading {len(tools_to_load)} core tools, {deferred_count} tools deferred")
+            else:
+                tools_to_load = list(self._iter_tools())
+
+            for tool in tools_to_load:
                 mcp_tool = self.make_mcp_tool(tool, openai_tool_compatible=openai_tool_compatible)
                 mcp._tool_manager._tools[tool.get_name()] = mcp_tool
             log.info(f"Starting MCP server with {len(mcp._tool_manager._tools)} tools: {list(mcp._tool_manager._tools.keys())}")

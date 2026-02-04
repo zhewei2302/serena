@@ -33,6 +33,13 @@ class PromptFactory(PromptFactoryBase):
         return self._render_prompt("prepare_for_new_conversation", locals())
 
     def create_system_prompt(
-        self, *, available_markers: Any, available_tools: Any, context_system_prompt: Any, mode_system_prompts: Any
+        self,
+        *,
+        available_markers: Any,
+        available_tools: Any,
+        context_system_prompt: Any,
+        mode_system_prompts: Any,
+        deferred_loading_enabled: Any = False,
+        core_tools: Any = None,
     ) -> str:
         return self._render_prompt("system_prompt", locals())

@@ -1,0 +1,24 @@
+description: Context with deferred tool loading for reduced initial overhead
+prompt: |
+  You are running with deferred tool loading enabled.
+  Only core tools are available initially to reduce overhead and improve startup time.
+  Use `search_tools` to discover additional tools when you need them.
+
+  This context is useful for environments where minimizing the initial tool count is important,
+  such as when working with LLM providers that have token limits on tool definitions.
+
+excluded_tools: []
+included_optional_tools:
+  - switch_modes
+
+tool_description_overrides: {}
+
+deferred_loading: true
+core_tools:
+  - search_tools
+  - initial_instructions
+  - activate_project
+  - get_current_config
+  - check_onboarding_performed
+  - list_dir
+  - find_file

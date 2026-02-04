@@ -39,6 +39,18 @@ prompts:
     You generally have access to memories and it may be useful for you to read them.
     You infer whether memories are relevant based on their names.
     {% endif %}
+    {% if deferred_loading_enabled %}
+
+    **Tool Discovery (Deferred Loading)**
+    Only core tools are loaded initially to reduce overhead. Use `search_tools` to discover additional tools:
+    - `search_tools(query="symbol")` - Search for tools with names containing "symbol"
+    - `search_tools(category="file_operations")` - List all file operation tools
+    - `search_tools(category="symbolic_read")` - List symbol reading tools
+    - `search_tools(category="symbolic_edit")` - List symbol editing tools
+    - `search_tools(category="memory")` - List memory tools
+
+    Core tools available: {{ core_tools | join(', ') }}
+    {% endif %}
 
     The context and modes of operation are described below. These determine how to interact with your user
     and which kinds of interactions are expected of you.

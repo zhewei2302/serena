@@ -1,4 +1,5 @@
-from serena.tools import Tool, ToolMarkerDoesNotRequireActiveProject, ToolMarkerOptional
+from serena.tools import Tool, ToolMarkerDoesNotRequireActiveProject, ToolMarkerOptional, ToolRegistry
+from serena.tools.tool_categories import ToolCategory, ToolCategoryRegistry
 
 
 class OpenDashboardTool(Tool, ToolMarkerOptional, ToolMarkerDoesNotRequireActiveProject):
@@ -80,3 +81,88 @@ class GetCurrentConfigTool(Tool):
         Print the current configuration of the agent, including the active and available projects, tools, contexts, and modes.
         """
         return self.agent.get_current_config_overview()
+
+
+class SearchToolsTool(Tool, ToolMarkerDoesNotRequireActiveProject):
+    """
+    Searches for available tools by name, category, or keyword.
+    Use this tool to discover tools when deferred loading is enabled.
+    """
+
+    def apply(
+        self,
+        query: str = "",
+        category: str | None = None,
+        include_descriptions: bool = True,
+        max_results: int = 20,
+    ) -> str:
+        """
+        Search for available tools by name pattern or category.
+
+        :param query: search query to match against tool names (case-insensitive substring match)
+        :param category: filter by category (file_operations, symbolic_read, symbolic_edit, memory, config, workflow, shell, jetbrains)
+        :param include_descriptions: whether to include tool descriptions in the results
+        :param max_results: maximum number of results to return
+        :return: a formatted list of matching tools with their metadata
+        """
+        registry = ToolRegistry()
+        category_registry = ToolCategoryRegistry()
+
+        # Get all tool names
+        all_tool_names = registry.get_tool_names()
+
+        # Filter by category if specified
+        if category:
+            try:
+                cat_enum = ToolCategory(category.lower())
+                category_tools = set(category_registry.get_tools_by_category(cat_enum))
+                all_tool_names = [name for name in all_tool_names if name in category_tools]
+            except ValueError:
+                valid_categories = ", ".join([c.value for c in ToolCategory])
+                return f"Invalid category '{category}'. Valid categories are: {valid_categories}"
+
+        # Filter by query if specified
+        if query:
+            query_lower = query.lower()
+            all_tool_names = [name for name in all_tool_names if query_lower in name.lower()]
+
+        # Limit results
+        all_tool_names = sorted(all_tool_names)[:max_results]
+
+        if not all_tool_names:
+            result = "No tools found matching the search criteria."
+            if category:
+                result += f"\nCategory filter: {category}"
+            if query:
+                result += f"\nQuery: {query}"
+            return result
+
+        # Build result
+        result_lines = [f"Found {len(all_tool_names)} tool(s):"]
+        for tool_name in all_tool_names:
+            tool_class = registry.get_tool_class_by_name(tool_name)
+            tool_category = category_registry.get_category(tool_name)
+            is_active = self.agent.tool_is_active(tool_name)
+            can_edit = tool_class.can_edit()
+
+            line = f"\n- **{tool_name}**"
+            line += f" [{'active' if is_active else 'inactive'}]"
+            if can_edit:
+                line += " [can_edit]"
+            if tool_category:
+                line += f" [{tool_category.value}]"
+
+            if include_descriptions:
+                description = tool_class.get_tool_description()
+                if description:
+                    # Truncate long descriptions
+                    if len(description) > 100:
+                        description = description[:97] + "..."
+                    line += f"\n  {description}"
+
+            result_lines.append(line)
+
+        # Add available categories at the end
+        result_lines.append("\n\nAvailable categories: " + ", ".join([c.value for c in ToolCategory]))
+
+        return "\n".join(result_lines)

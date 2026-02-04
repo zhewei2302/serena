@@ -169,6 +169,18 @@ class SerenaAgentContext(ToolInclusionDefinition, ToStringMixin):
     The `activate_project` tool will, therefore, be disabled in this case, as project switching is not allowed.
     """
 
+    deferred_loading: bool = False
+    """
+    Whether to enable deferred tool loading. When enabled, only core tools are loaded initially,
+    and other tools can be discovered using the `search_tools` tool.
+    """
+
+    core_tools: tuple[str, ...] = ()
+    """
+    The list of core tools to load when deferred_loading is enabled.
+    If empty, uses the default core tools defined in DEFAULT_CORE_TOOLS.
+    """
+
     def _tostring_includes(self) -> list[str]:
         return ["name"]
 
@@ -182,6 +194,9 @@ class SerenaAgentContext(ToolInclusionDefinition, ToStringMixin):
         # Ensure backwards compatibility for tool_description_overrides
         if "tool_description_overrides" not in data:
             data["tool_description_overrides"] = {}
+        # Convert core_tools list to tuple if present
+        if "core_tools" in data and isinstance(data["core_tools"], list):
+            data["core_tools"] = tuple(data["core_tools"])
         return cls(name=name, _yaml_path=yaml_as_path, **data)
 
     @classmethod

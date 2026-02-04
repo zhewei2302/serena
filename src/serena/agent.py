@@ -538,14 +538,23 @@ class SerenaAgent:
         return template.render(available_tools=self._exposed_tools.tool_names, available_markers=self._exposed_tools.tool_marker_names)
 
     def create_system_prompt(self) -> str:
+        from serena.constants import DEFAULT_CORE_TOOLS
+
         available_tools = self._active_tools
         available_markers = available_tools.tool_marker_names
         log.info("Generating system prompt with available_tools=(see active tools), available_markers=%s", available_markers)
+
+        # Determine deferred loading settings
+        deferred_loading_enabled = self._context.deferred_loading
+        core_tools = list(self._context.core_tools) if self._context.core_tools else list(DEFAULT_CORE_TOOLS)
+
         system_prompt = self.prompt_factory.create_system_prompt(
             context_system_prompt=self._format_prompt(self._context.prompt),
             mode_system_prompts=[self._format_prompt(mode.prompt) for mode in self.get_active_modes()],
             available_tools=available_tools.tool_names,
             available_markers=available_markers,
+            deferred_loading_enabled=deferred_loading_enabled,
+            core_tools=core_tools,
         )
 
         # If a project is active at startup, append its activation message
