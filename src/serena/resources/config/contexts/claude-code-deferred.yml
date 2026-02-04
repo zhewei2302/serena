@@ -1,0 +1,38 @@
+description: Claude Code with deferred loading for minimal context usage
+prompt: |
+  You are running in a CLI coding agent context where file operations, basic (line-based) edits and reads
+  as well as shell commands are handled by your own, internal tools.
+
+  Serena tools use deferred loading - only core tools are available initially.
+  Use `search_tools` to discover additional symbolic tools when needed.
+
+  Prioritize Serena's symbolic tools for token-efficient code exploration.
+
+# 排除 Claude Code 已有的工具
+excluded_tools:
+  - create_text_file
+  - read_file
+  - execute_shell_command
+  - prepare_for_new_conversation
+  - replace_content
+
+tool_description_overrides: {}
+
+# 單一專案模式
+single_project: true
+
+# 啟用延遲載入
+deferred_loading: true
+
+# 核心工具 - 包含最常用的符號操作
+core_tools:
+  - search_tools
+  - initial_instructions
+  - get_current_config
+  - list_dir
+  - find_file
+  - get_symbols_overview    # 符號概覽（高頻使用）
+  - find_symbol             # 符號搜尋（高頻使用）
+  - search_for_pattern      # 模式搜尋
+  - read_memory             # 記憶讀取
+  - list_memories           # 記憶列表
