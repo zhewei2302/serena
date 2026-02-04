@@ -18,8 +18,8 @@ excluded_tools:
 
 tool_description_overrides: {}
 
-# 單一專案模式
-single_project: true
+# 允許動態切換專案（Claude Code 會在不同專案目錄中使用）
+single_project: false
 
 # 啟用延遲載入
 deferred_loading: true
@@ -29,6 +29,7 @@ core_tools:
   - search_tools
   - initial_instructions
   - get_current_config
+  - activate_project        # 動態啟用專案
   - list_dir
   - find_file
   - get_symbols_overview    # 符號概覽（高頻使用）
