@@ -1,70 +1,24 @@
 """
-CSharp Language Server using Microsoft.CodeAnalysis.LanguageServer (Official Roslyn-based LSP server)
-
-This module supports Razor (.razor, .cshtml) files through the Razor extension when available.
-
-## Configuration Options
-
-The following options can be set in ls_specific_settings[Language.CSHARP]:
-
-    enable_razor (bool):
-        Enable Razor (.razor, .cshtml) file support through the Razor extension.
-        Default: True
-        Note: Requires matching .NET versions between language server and Razor extension.
-
-    local_language_server_path (str):
-        Path to a locally built Roslyn language server directory.
-        The directory should contain Microsoft.CodeAnalysis.LanguageServer.dll.
-        Example: "D:/GitHub/roslyn/artifacts/bin/Microsoft.CodeAnalysis.LanguageServer/Release/net10.0"
-
-    local_razor_extension_path (str):
-        Path to a locally built Razor extension directory.
-        The directory should contain Microsoft.VisualStudioCode.RazorExtension.dll.
-        Example: "D:/GitHub/razor/artifacts/bin/Microsoft.AspNetCore.Razor.LanguageServer/Release/net10.0"
-
-    runtime_dependencies (list[dict]):
-        Override default runtime dependency configurations.
-
-    dotnet_runtime_major_version (str):
-        Override the .NET runtime major version used for cache directories and fallback paths.
-        Default: Auto-detected from system, falls back to "9" if not found.
-        The auto-detection finds the highest installed .NET version (9+) on the system.
-        Set this explicitly when overriding runtime_dependencies to use a specific version.
-
-## Razor Document Symbol Support
-
-The Razor Language Server uses a delegation architecture for Document Symbols:
-1. Razor LS sends `razor/updateCSharpBuffer` notifications with generated C# content
-2. When Document Symbols are requested for a Razor file, Razor LS sends `razor/documentSymbol`
-   request to the client (Serena)
-3. Serena's CSharpLanguageServer receives this request, looks up the cached virtual C# document,
-   and forwards the symbol request to Roslyn C# LS
-4. The C# symbols are returned to Razor LS, which maps them back to Razor positions
-
-This implementation enables Serena's symbol analysis tools (get_symbols_overview, find_symbol, etc.)
-to work with Razor files by providing the underlying C# symbol information.
+CSharp Language Server using Roslyn Language Server (Official Roslyn-based LSP server from NuGet.org)
 """
 
-import json
 import logging
 import os
 import platform
 import shutil
 import subprocess
-import tarfile
 import threading
 import urllib.request
-import zipfile
-from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
 
 from overrides import override
 
-from solidlsp.ls import LanguageServerDependencyProvider, SolidLanguageServer
+from solidlsp.ls import DocumentSymbols, LanguageServerDependencyProvider, SolidLanguageServer
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_exceptions import SolidLSPException
+from solidlsp.ls_types import Hover, UnifiedSymbolInformation
 from solidlsp.ls_utils import PathUtils
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams, InitializeResult
 from solidlsp.settings import SolidLSPSettings
@@ -74,122 +28,72 @@ from .common import RuntimeDependency, RuntimeDependencyCollection
 
 log = logging.getLogger(__name__)
 
-# Path to bundled Razor extension files (relative to this module)
-_BUNDLED_RAZOR_EXTENSION_DIR = Path(__file__).parent / "razor_extension"
-
-# Version constants - update these when upgrading
-_CSHARP_LANGUAGE_SERVER_VERSION = "5.0.0-1.25329.6"
-_DOTNET_RUNTIME_VERSION = "9.0.6"
-_DOTNET_RUNTIME_MAJOR_VERSION = "9"
-
 _RUNTIME_DEPENDENCIES = [
     RuntimeDependency(
         id="CSharpLanguageServer",
-        description="Microsoft.CodeAnalysis.LanguageServer for Windows (x64)",
-        package_name="Microsoft.CodeAnalysis.LanguageServer.win-x64",
-        package_version=_CSHARP_LANGUAGE_SERVER_VERSION,
+        description="Roslyn Language Server for Windows (x64)",
+        package_name="roslyn-language-server.win-x64",
+        package_version="5.5.0-2.26078.4",
+        url="https://www.nuget.org/api/v2/package/roslyn-language-server.win-x64/5.5.0-2.26078.4",
         platform_id="win-x64",
         archive_type="nupkg",
         binary_name="Microsoft.CodeAnalysis.LanguageServer.dll",
-        extract_path="content/LanguageServer/win-x64",
+        extract_path="tools/net10.0/win-x64",
     ),
     RuntimeDependency(
         id="CSharpLanguageServer",
-        description="Microsoft.CodeAnalysis.LanguageServer for Windows (ARM64)",
-        package_name="Microsoft.CodeAnalysis.LanguageServer.win-arm64",
-        package_version=_CSHARP_LANGUAGE_SERVER_VERSION,
+        description="Roslyn Language Server for Windows (ARM64)",
+        package_name="roslyn-language-server.win-arm64",
+        package_version="5.5.0-2.26078.4",
+        url="https://www.nuget.org/api/v2/package/roslyn-language-server.win-arm64/5.5.0-2.26078.4",
         platform_id="win-arm64",
         archive_type="nupkg",
         binary_name="Microsoft.CodeAnalysis.LanguageServer.dll",
-        extract_path="content/LanguageServer/win-arm64",
+        extract_path="tools/net10.0/win-arm64",
     ),
     RuntimeDependency(
         id="CSharpLanguageServer",
-        description="Microsoft.CodeAnalysis.LanguageServer for macOS (x64)",
-        package_name="Microsoft.CodeAnalysis.LanguageServer.osx-x64",
-        package_version=_CSHARP_LANGUAGE_SERVER_VERSION,
+        description="Roslyn Language Server for macOS (x64)",
+        package_name="roslyn-language-server.osx-x64",
+        package_version="5.5.0-2.26078.4",
+        url="https://www.nuget.org/api/v2/package/roslyn-language-server.osx-x64/5.5.0-2.26078.4",
         platform_id="osx-x64",
         archive_type="nupkg",
         binary_name="Microsoft.CodeAnalysis.LanguageServer.dll",
-        extract_path="content/LanguageServer/osx-x64",
+        extract_path="tools/net10.0/osx-x64",
     ),
     RuntimeDependency(
         id="CSharpLanguageServer",
-        description="Microsoft.CodeAnalysis.LanguageServer for macOS (ARM64)",
-        package_name="Microsoft.CodeAnalysis.LanguageServer.osx-arm64",
-        package_version=_CSHARP_LANGUAGE_SERVER_VERSION,
+        description="Roslyn Language Server for macOS (ARM64)",
+        package_name="roslyn-language-server.osx-arm64",
+        package_version="5.5.0-2.26078.4",
+        url="https://www.nuget.org/api/v2/package/roslyn-language-server.osx-arm64/5.5.0-2.26078.4",
         platform_id="osx-arm64",
         archive_type="nupkg",
         binary_name="Microsoft.CodeAnalysis.LanguageServer.dll",
-        extract_path="content/LanguageServer/osx-arm64",
+        extract_path="tools/net10.0/osx-arm64",
     ),
     RuntimeDependency(
         id="CSharpLanguageServer",
-        description="Microsoft.CodeAnalysis.LanguageServer for Linux (x64)",
-        package_name="Microsoft.CodeAnalysis.LanguageServer.linux-x64",
-        package_version=_CSHARP_LANGUAGE_SERVER_VERSION,
+        description="Roslyn Language Server for Linux (x64)",
+        package_name="roslyn-language-server.linux-x64",
+        package_version="5.5.0-2.26078.4",
+        url="https://www.nuget.org/api/v2/package/roslyn-language-server.linux-x64/5.5.0-2.26078.4",
         platform_id="linux-x64",
         archive_type="nupkg",
         binary_name="Microsoft.CodeAnalysis.LanguageServer.dll",
-        extract_path="content/LanguageServer/linux-x64",
+        extract_path="tools/net10.0/linux-x64",
     ),
     RuntimeDependency(
         id="CSharpLanguageServer",
-        description="Microsoft.CodeAnalysis.LanguageServer for Linux (ARM64)",
-        package_name="Microsoft.CodeAnalysis.LanguageServer.linux-arm64",
-        package_version=_CSHARP_LANGUAGE_SERVER_VERSION,
+        description="Roslyn Language Server for Linux (ARM64)",
+        package_name="roslyn-language-server.linux-arm64",
+        package_version="5.5.0-2.26078.4",
+        url="https://www.nuget.org/api/v2/package/roslyn-language-server.linux-arm64/5.5.0-2.26078.4",
         platform_id="linux-arm64",
         archive_type="nupkg",
         binary_name="Microsoft.CodeAnalysis.LanguageServer.dll",
-        extract_path="content/LanguageServer/linux-arm64",
-    ),
-    RuntimeDependency(
-        id="DotNetRuntime",
-        description=f".NET {_DOTNET_RUNTIME_MAJOR_VERSION} Runtime for Windows (x64)",
-        url=f"https://builds.dotnet.microsoft.com/dotnet/Runtime/{_DOTNET_RUNTIME_VERSION}/dotnet-runtime-{_DOTNET_RUNTIME_VERSION}-win-x64.zip",
-        platform_id="win-x64",
-        archive_type="zip",
-        binary_name="dotnet.exe",
-    ),
-    RuntimeDependency(
-        id="DotNetRuntime",
-        description=f".NET {_DOTNET_RUNTIME_MAJOR_VERSION} Runtime for Linux (x64)",
-        url=f"https://builds.dotnet.microsoft.com/dotnet/Runtime/{_DOTNET_RUNTIME_VERSION}/dotnet-runtime-{_DOTNET_RUNTIME_VERSION}-linux-x64.tar.gz",
-        platform_id="linux-x64",
-        archive_type="tar.gz",
-        binary_name="dotnet",
-    ),
-    RuntimeDependency(
-        id="DotNetRuntime",
-        description=f".NET {_DOTNET_RUNTIME_MAJOR_VERSION} Runtime for Linux (ARM64)",
-        url=f"https://builds.dotnet.microsoft.com/dotnet/Runtime/{_DOTNET_RUNTIME_VERSION}/dotnet-runtime-{_DOTNET_RUNTIME_VERSION}-linux-arm64.tar.gz",
-        platform_id="linux-arm64",
-        archive_type="tar.gz",
-        binary_name="dotnet",
-    ),
-    RuntimeDependency(
-        id="DotNetRuntime",
-        description=f".NET {_DOTNET_RUNTIME_MAJOR_VERSION} Runtime for macOS (x64)",
-        url=f"https://builds.dotnet.microsoft.com/dotnet/Runtime/{_DOTNET_RUNTIME_VERSION}/dotnet-runtime-{_DOTNET_RUNTIME_VERSION}-osx-x64.tar.gz",
-        platform_id="osx-x64",
-        archive_type="tar.gz",
-        binary_name="dotnet",
-    ),
-    RuntimeDependency(
-        id="DotNetRuntime",
-        description=f".NET {_DOTNET_RUNTIME_MAJOR_VERSION} Runtime for macOS (ARM64)",
-        url=f"https://builds.dotnet.microsoft.com/dotnet/Runtime/{_DOTNET_RUNTIME_VERSION}/dotnet-runtime-{_DOTNET_RUNTIME_VERSION}-osx-arm64.tar.gz",
-        platform_id="osx-arm64",
-        archive_type="tar.gz",
-        binary_name="dotnet",
-    ),
-    RuntimeDependency(
-        id="DotNetRuntime",
-        description=f".NET {_DOTNET_RUNTIME_MAJOR_VERSION} Runtime for Windows (ARM64)",
-        url=f"https://builds.dotnet.microsoft.com/dotnet/Runtime/{_DOTNET_RUNTIME_VERSION}/dotnet-runtime-{_DOTNET_RUNTIME_VERSION}-win-arm64.zip",
-        platform_id="win-arm64",
-        archive_type="zip",
-        binary_name="dotnet.exe",
+        extract_path="tools/net10.0/linux-arm64",
     ),
 ]
 
@@ -238,70 +142,28 @@ def find_solution_or_project_file(root_dir: str) -> str | None:
     return csproj_file
 
 
-class LRUCache(OrderedDict):
-    """A simple LRU (Least Recently Used) cache based on OrderedDict.
-
-    When the cache exceeds maxsize, the least recently used items are evicted.
-    Accessing or setting an item moves it to the end (most recently used).
-    """
-
-    def __init__(self, maxsize: int = 100):
-        super().__init__()
-        self.maxsize = maxsize
-
-    def __getitem__(self, key: Any) -> Any:
-        value = super().__getitem__(key)
-        self.move_to_end(key)
-        return value
-
-    def __setitem__(self, key: Any, value: Any) -> None:
-        if key in self:
-            self.move_to_end(key)
-        super().__setitem__(key, value)
-        while len(self) > self.maxsize:
-            self.popitem(last=False)
-
-    def get(self, key: Any, default: Any = None) -> Any:
-        """Get an item without moving it to the end."""
-        try:
-            return super().__getitem__(key)
-        except KeyError:
-            return default
-
-
 class CSharpLanguageServer(SolidLanguageServer):
     """
-    Provides C# specific instantiation of the LanguageServer class using `Microsoft.CodeAnalysis.LanguageServer`,
-    the official Roslyn-based language server from Microsoft.
+    Provides C# specific instantiation of the LanguageServer class using the official Roslyn-based
+    language server from NuGet.org.
 
-    ## Razor Support
+    You can pass a list of runtime dependency overrides in ls_specific_settings["csharp"]["runtime_dependencies"].
+    This is a list of dicts, each containing at least the "id" key, and optionally "platform_id" to uniquely
+    identify the dependency to override.
 
-    This language server supports Razor (.razor, .cshtml) files through the Razor extension.
-    Razor support is enabled by default if the razor_extension files are available.
-
-    To disable Razor support, set ls_specific_settings["csharp"]["enable_razor"] = False.
-
-    The Razor extension provides:
-    - IntelliSense for Razor syntax
-    - Go to Definition for components and C# code
-    - Hover information
-    - Diagnostics for Razor files
-
-    ## Runtime Dependency Overrides
-
-    You can pass a list of runtime dependency overrides in ls_specific_settings["csharp"]["runtime_dependencies"]. This is a list of
-    dicts, each containing at least the "id" key, and optionally "platform_id" to uniquely identify the dependency to override.
-    For example, to override the URL of the .NET runtime on windows-x64, add the entry:
-
+    Example - Override Roslyn Language Server URL:
     ```
         {
-            "id": "DotNetRuntime",
+            "id": "CSharpLanguageServer",
             "platform_id": "win-x64",
-            "url": "https://example.com/custom-dotnet-runtime.zip"
+            "url": "https://example.com/custom-roslyn-server.nupkg"
         }
     ```
 
     See the `_RUNTIME_DEPENDENCIES` variable above for the available dependency ids and platform_ids.
+
+    Note: .NET runtime (version 10+) is required and installed automatically via Microsoft's official install
+    scripts. If you have a custom .NET installation, ensure 'dotnet' is available in PATH with version 10 or higher.
     """
 
     def __init__(self, config: LanguageServerConfig, repository_root_path: str, solidlsp_settings: SolidLSPSettings):
@@ -310,78 +172,9 @@ class CSharpLanguageServer(SolidLanguageServer):
         Use LanguageServer.create() instead.
         """
         super().__init__(config, repository_root_path, None, "csharp", solidlsp_settings)
-
-        self.initialization_complete = threading.Event()
-
-        # Razor virtual C# document cache with LRU eviction
-        # Maps razor file URI -> (version, generated C# content, virtual C# URI)
-        # Uses LRU cache to prevent unbounded memory growth
-        self._razor_virtual_documents: LRUCache = LRUCache(maxsize=100)
-
-        # Dynamic capability registration table
-        # Maps registration id -> registration details (method, registerOptions, etc.)
-        # This is used by Razor Cohosting to register handlers for .cshtml and .razor files
-        self._registered_capabilities: dict[str, dict] = {}
-
-    def get_registered_capabilities(self) -> dict[str, dict]:
-        """Get a copy of all dynamically registered capabilities.
-
-        Returns:
-            A dictionary mapping registration id to capability details.
-            Each capability contains: id, method, registerOptions
-
-        """
-        return dict(self._registered_capabilities)
-
-    def get_capabilities_for_method(self, method: str) -> list[dict]:
-        """Get all registered capabilities for a specific LSP method.
-
-        Args:
-            method: The LSP method name (e.g., 'textDocument/documentSymbol')
-
-        Returns:
-            A list of capability registrations for the given method.
-
-        """
-        return [cap for cap in self._registered_capabilities.values() if cap.get("method") == method]
-
-    def is_capability_registered(self, method: str, pattern: str | None = None) -> bool:
-        """Check if a capability is registered for a method and optional file pattern.
-
-        Args:
-            method: The LSP method name
-            pattern: Optional file pattern to check (e.g., '**/*.cshtml')
-
-        Returns:
-            True if the capability is registered.
-
-        """
-        for cap in self._registered_capabilities.values():
-            if cap.get("method") != method:
-                continue
-            if pattern is None:
-                return True
-            doc_selector = cap.get("registerOptions", {}).get("documentSelector", [])
-            for selector in doc_selector:
-                if selector.get("pattern") == pattern:
-                    return True
-        return False
-
-    @override
-    def _get_language_id_for_file(self, relative_file_path: str) -> str:
-        """Return the correct language ID for files.
-
-        Razor (.razor, .cshtml) files must be opened with language ID "aspnetcorerazor"
-        for the Razor Cohost extension to process them correctly. The Razor Cohost
-        dynamically registers handlers for document selectors with language="aspnetcorerazor".
-
-        This is critical for Razor Cohosting support - without the correct languageId,
-        requests to .cshtml files will not be routed to the Razor handlers.
-        """
-        ext = os.path.splitext(relative_file_path)[1].lower()
-        if ext in (".razor", ".cshtml"):
-            return "aspnetcorerazor"
-        return "csharp"
+        # Cache for original Roslyn symbol names with type annotations
+        # Key: (relative_file_path, line, character) -> Value: original name
+        self._original_symbol_names: dict[tuple[str, int, int], str] = {}
 
     def _create_dependency_provider(self) -> LanguageServerDependencyProvider:
         return self.DependencyProvider(self._custom_settings, self._ls_resources_dir, self._solidlsp_settings, self.repository_root_path)
@@ -389,6 +182,116 @@ class CSharpLanguageServer(SolidLanguageServer):
     @override
     def is_ignored_dirname(self, dirname: str) -> bool:
         return super().is_ignored_dirname(dirname) or dirname in ["bin", "obj", "packages", ".vs"]
+
+    @override
+    def request_document_symbols(self, relative_file_path: str, file_buffer: Any = None) -> DocumentSymbols:
+        """
+        Override to normalize Roslyn symbol names and cache originals.
+
+        Roslyn 5.5.0+ returns symbol names with type annotations:
+        - Properties: "Name : string"
+        - Methods: "Add(int, int) : int"
+
+        This method:
+        1. Normalizes names to base form ("Name", "Add")
+        2. Caches original names for rich information display
+        3. Populates LSP spec's 'detail' field with type/signature info
+        """
+        symbols = super().request_document_symbols(relative_file_path, file_buffer)
+
+        # Normalize all symbols recursively
+        for symbol in symbols.iter_symbols():
+            self._normalize_symbol_name(symbol, relative_file_path)
+
+        return symbols
+
+    @override
+    def request_hover(self, relative_file_path: str, line: int, column: int) -> Hover | None:
+        """
+        Override to inject original Roslyn symbol names (with type annotations) into hover responses.
+
+        When hovering over a symbol whose name was normalized, we prepend the original
+        full name (e.g., 'Add(int, int) : int') to the hover content.
+        """
+        hover = super().request_hover(relative_file_path, line, column)
+
+        if hover is None:
+            return None
+
+        # Check if we have an original name for this position
+        original_name = self._original_symbol_names.get((relative_file_path, line, column))
+
+        if original_name and "contents" in hover:
+            contents = hover["contents"]
+            if isinstance(contents, dict) and "value" in contents:
+                # Prepend the original full name with type information to the hover content
+                prefix = f"**{original_name}**\n\n---\n\n"
+                contents["value"] = prefix + contents["value"]
+
+        return hover
+
+    def _normalize_symbol_name(self, symbol: UnifiedSymbolInformation, relative_file_path: str) -> None:
+        """
+        Normalize a single symbol's name and cache the original.
+        Processes children recursively.
+        """
+        original_name = symbol.get("name", "")
+
+        # Extract base name and type/signature info
+        normalized_name, type_info = self._extract_base_name_and_type(original_name)
+
+        # Store original name if it was normalized
+        if original_name != normalized_name:
+            sel_range = symbol.get("selectionRange")
+            if sel_range:
+                start = sel_range.get("start")
+                if start and "line" in start and "character" in start:
+                    line = start["line"]
+                    char = start["character"]
+                    cache_key = (relative_file_path, line, char)
+                    self._original_symbol_names[cache_key] = original_name
+
+            # Populate LSP spec's 'detail' field with type/signature information
+            if type_info and "detail" not in symbol:
+                symbol["detail"] = type_info
+
+        # Update the symbol name
+        symbol["name"] = normalized_name
+
+        # Process children recursively
+        children = symbol.get("children", [])
+        for child in children:
+            self._normalize_symbol_name(child, relative_file_path)
+
+    @staticmethod
+    def _extract_base_name_and_type(roslyn_name: str) -> tuple[str, str]:
+        """
+        Extract base name and type/signature information from Roslyn symbol names.
+
+        Examples:
+            "Name : string" -> ("Name", ": string")
+            "Add(int, int) : int" -> ("Add", "(int, int) : int")
+            "ToString()" -> ("ToString", "()")
+            "SimpleMethod" -> ("SimpleMethod", "")
+
+        Returns:
+            Tuple of (base_name, type_info)
+
+        """
+        # Check for property pattern: "Name : Type"
+        if " : " in roslyn_name and "(" not in roslyn_name:
+            base_name, type_part = roslyn_name.split(" : ", 1)
+            return base_name.strip(), f": {type_part.strip()}"
+
+        # Check for method pattern: "MethodName(params) : ReturnType"
+        if "(" in roslyn_name:
+            paren_idx = roslyn_name.index("(")
+            base_name = roslyn_name[:paren_idx].strip()
+            signature = roslyn_name[paren_idx:].strip()
+            return base_name, signature
+
+        # No type annotation
+        return roslyn_name, ""
 
     class DependencyProvider(LanguageServerDependencyProvider):
         def __init__(
@@ -401,215 +304,7 @@ class CSharpLanguageServer(SolidLanguageServer):
             super().__init__(custom_settings, ls_resources_dir)
             self._solidlsp_settings = solidlsp_settings
             self._repository_root_path = repository_root_path
-
-            # Determine .NET runtime major version:
-            # 1. Use explicit setting if provided
-            # 2. Auto-detect from system if available
-            # 3. Fall back to default constant
-            explicit_version = custom_settings.get("dotnet_runtime_major_version")
-            if explicit_version is not None:
-                self._dotnet_runtime_major_version = cast(str, explicit_version)
-                log.debug(f"Using explicitly configured .NET major version: {self._dotnet_runtime_major_version}")
-            else:
-                detected_version = self._detect_system_dotnet_major_version()
-                if detected_version is not None:
-                    self._dotnet_runtime_major_version = detected_version
-                    log.info(f"Auto-detected system .NET major version: {self._dotnet_runtime_major_version}")
-                else:
-                    self._dotnet_runtime_major_version = _DOTNET_RUNTIME_MAJOR_VERSION
-                    log.debug(f"Using default .NET major version: {self._dotnet_runtime_major_version}")
-
             self._dotnet_path, self._language_server_path = self._ensure_server_installed()
-
-            # Check if Razor support is enabled
-            self._enable_razor = cast(bool, custom_settings.get("enable_razor", True))
-            self._razor_extension_dir: Path | None = None
-
-            if self._enable_razor:
-                self._razor_extension_dir = self._ensure_razor_extension_installed()
-
-        @staticmethod
-        def _load_local_cache_metadata(meta_file: Path) -> dict[str, Any] | None:
-            """Load local cache metadata from JSON file."""
-            if not meta_file.exists():
-                return None
-            try:
-                with open(meta_file, encoding="utf-8") as f:
-                    return cast(dict[str, Any], json.load(f))
-            except (json.JSONDecodeError, OSError) as e:
-                log.warning(f"Failed to load cache metadata from {meta_file}: {e}")
-                return None
-
-        @staticmethod
-        def _save_local_cache_metadata(
-            meta_file: Path,
-            source_path: Path,
-            source_mtime: float,
-        ) -> None:
-            """Save local cache metadata to JSON file."""
-            import time
-
-            metadata = {
-                "source_path": str(source_path),
-                "source_mtime": source_mtime,
-                "copied_at": time.time(),
-            }
-            try:
-                with open(meta_file, "w", encoding="utf-8") as f:
-                    json.dump(metadata, f, indent=2)
-            except OSError as e:
-                log.warning(f"Failed to save cache metadata to {meta_file}: {e}")
-
-        def _is_local_cache_up_to_date(
-            self,
-            source_path: Path,
-            cache_dir: Path,
-            meta_file: Path,
-            main_dll_name: str,
-        ) -> bool:
-            """
-            Check if the local cache is up-to-date.
-
-            Returns True if:
-            - Cache directory exists
-            - Metadata file exists and is valid
-            - Source path matches
-            - Main DLL modification time matches
-            """
-            if not cache_dir.exists():
-                return False
-
-            metadata = self._load_local_cache_metadata(meta_file)
-            if metadata is None:
-                return False
-
-            # Check if source path matches
-            if metadata.get("source_path") != str(source_path):
-                log.debug(f"Cache source path mismatch: {metadata.get('source_path')} != {source_path}")
-                return False
-
-            # Check main DLL modification time
-            main_dll = source_path / main_dll_name
-            if not main_dll.exists():
-                return False
-
-            current_mtime = main_dll.stat().st_mtime
-            cached_mtime = metadata.get("source_mtime")
-            if cached_mtime is None or current_mtime != cached_mtime:
-                log.debug(f"Cache mtime mismatch: {cached_mtime} != {current_mtime}")
-                return False
-
-            return True
-
-        def _copy_local_to_cache(
-            self,
-            source_path: Path,
-            cache_dir: Path,
-            meta_file: Path,
-            main_dll_name: str,
-        ) -> Path | None:
-            """
-            Copy local directory to cache.
-
-            Returns the cache directory path on success, None on failure.
-            """
-            main_dll = source_path / main_dll_name
-            if not main_dll.exists():
-                log.warning(f"Main DLL not found: {main_dll}")
-                return None
-
-            try:
-                # Remove existing cache directory if it exists
-                if cache_dir.exists():
-                    shutil.rmtree(cache_dir)
-
-                # Copy the directory
-                shutil.copytree(source_path, cache_dir)
-
-                # Save metadata
-                source_mtime = main_dll.stat().st_mtime
-                self._save_local_cache_metadata(meta_file, source_path, source_mtime)
-
-                return cache_dir
-            except Exception as e:
-                log.warning(f"Failed to copy local directory to cache: {e}")
-                return None
-
-        @staticmethod
-        def _detect_system_dotnet_major_version() -> str | None:
-            """
-            Detect the highest .NET runtime major version installed on the system.
-            Returns the major version as a string (e.g., "10", "9") or None if not found.
-
-            Only considers .NET 9+ as earlier versions are not supported by the language server.
-            """
-            system_dotnet = shutil.which("dotnet")
-            if not system_dotnet:
-                return None
-
-            try:
-                result = subprocess.run(
-                    [system_dotnet, "--list-runtimes"],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    timeout=10,
-                )
-
-                # Parse runtime versions from output like:
-                # Microsoft.NETCore.App 9.0.6 [/usr/share/dotnet/shared/Microsoft.NETCore.App]
-                # Microsoft.NETCore.App 10.0.0 [...]
-                import re
-
-                versions: list[int] = []
-                for line in result.stdout.splitlines():
-                    match = re.search(r"Microsoft\.NETCore\.App\s+(\d+)\.", line)
-                    if match:
-                        major_version = int(match.group(1))
-                        # Only consider .NET 9+ (required by Roslyn LS)
-                        if major_version >= 9:
-                            versions.append(major_version)
-
-                if versions:
-                    highest_version = max(versions)
-                    return str(highest_version)
-
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
-                log.debug(f"Failed to detect system .NET version: {e}")
-
-            return None
-
-        @staticmethod
-        def _check_system_dotnet_has_supported_runtime() -> str | None:
-            """
-            Check if system dotnet has a supported .NET runtime (9 or 10).
-            Returns the dotnet executable path if a supported runtime is found, None otherwise.
-
-            The language server supports .NET 9+, with .NET 10 preferred for newer versions.
-            """
-            system_dotnet = shutil.which("dotnet")
-            if not system_dotnet:
-                return None
-
-            try:
-                result = subprocess.run(
-                    [system_dotnet, "--list-runtimes"],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    timeout=10,
-                )
-                # Prefer .NET 10 first as it's supported by newer language server versions
-                if "Microsoft.NETCore.App 10." in result.stdout:
-                    log.info("Found system .NET 10 runtime")
-                    return system_dotnet
-                elif "Microsoft.NETCore.App 9." in result.stdout:
-                    log.info("Found system .NET 9 runtime")
-                    return system_dotnet
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
-                log.debug(f"Failed to check system .NET runtime: {e}")
-
-            return None
 
         def create_launch_command(self) -> list[str] | str:
             # Find solution or project file
@@ -622,24 +317,6 @@ class CSharpLanguageServer(SolidLanguageServer):
             # Build command using dotnet directly
             cmd = [self._dotnet_path, self._language_server_path, "--logLevel=Information", f"--extensionLogDirectory={log_dir}", "--stdio"]
 
-            # Add Razor extension parameters if available
-            if self._razor_extension_dir and self._razor_extension_dir.exists():
-                razor_extension_dll = self._razor_extension_dir / "Microsoft.VisualStudioCode.RazorExtension.dll"
-                razor_compiler_dll = self._razor_extension_dir / "Microsoft.CodeAnalysis.Razor.Compiler.dll"
-                razor_design_time_targets = self._razor_extension_dir / "Targets" / "Microsoft.NET.Sdk.Razor.DesignTime.targets"
-
-                if razor_extension_dll.exists():
-                    cmd.append(f"--extension={razor_extension_dll}")
-                    log.info(f"Razor extension enabled: {razor_extension_dll}")
-
-                if razor_compiler_dll.exists():
-                    cmd.append(f"--razorSourceGenerator={razor_compiler_dll}")
-                    log.debug(f"Razor source generator: {razor_compiler_dll}")
-
-                if razor_design_time_targets.exists():
-                    cmd.append(f"--razorDesignTimePath={razor_design_time_targets}")
-                    log.debug(f"Razor design time targets: {razor_design_time_targets}")
-
             # The language server will discover the solution/project from the workspace root
             if solution_or_project:
                 log.info(f"Found solution/project file: {solution_or_project}")
@@ -650,117 +327,30 @@ class CSharpLanguageServer(SolidLanguageServer):
 
             return cmd
 
-        def _ensure_razor_extension_installed(self) -> Path | None:
-            """
-            Ensure Razor extension files are available in the language server resources directory.
-            Returns the path to the Razor extension directory, or None if not available.
-
-            You can specify a local Razor extension path in ls_specific_settings["csharp"]["local_razor_extension_path"]
-            to use a locally built Razor extension instead of the bundled one.
-            """
-            # Check for local Razor extension path override
-            local_razor_path = self._custom_settings.get("local_razor_extension_path")
-            if local_razor_path and isinstance(local_razor_path, str):
-                source_path = Path(local_razor_path)
-                main_dll = "Microsoft.VisualStudioCode.RazorExtension.dll"
-                if (source_path / main_dll).exists():
-                    cache_dir = Path(self._ls_resources_dir) / "local-razor"
-                    meta_file = Path(self._ls_resources_dir) / "local-razor.meta.json"
-
-                    if not self._is_local_cache_up_to_date(source_path, cache_dir, meta_file, main_dll):
-                        log.info(f"Copying local Razor extension to cache from {local_razor_path}")
-                        cached_path = self._copy_local_to_cache(source_path, cache_dir, meta_file, main_dll)
-                        if cached_path is None:
-                            # Fallback to direct use if copy fails
-                            log.warning("Falling back to direct use of local Razor extension")
-                            return source_path
-                    else:
-                        log.info(f"Using cached local Razor extension (source: {local_razor_path})")
-
-                    return cache_dir
-                else:
-                    log.warning(f"Local Razor extension path specified but DLL not found: {source_path / main_dll}")
-
-            razor_dir = Path(self._ls_resources_dir) / "RazorExtension"
-            razor_extension_dll = razor_dir / "Microsoft.VisualStudioCode.RazorExtension.dll"
-
-            # Check if already installed
-            if razor_extension_dll.exists():
-                log.info(f"Using cached Razor extension from {razor_dir}")
-                return razor_dir
-
-            # Check if bundled Razor extension is available
-            if not _BUNDLED_RAZOR_EXTENSION_DIR.exists():
-                log.warning(
-                    f"Razor extension not found at {_BUNDLED_RAZOR_EXTENSION_DIR}. "
-                    "Razor support will be disabled. To enable Razor support, ensure the "
-                    "razor_extension directory exists with the required DLLs."
-                )
-                return None
-
-            bundled_razor_dll = _BUNDLED_RAZOR_EXTENSION_DIR / "Microsoft.VisualStudioCode.RazorExtension.dll"
-            if not bundled_razor_dll.exists():
-                log.warning(f"Bundled Razor extension DLL not found at {bundled_razor_dll}. Razor support will be disabled.")
-                return None
-
-            # Copy bundled Razor extension to resources directory
-            log.info(f"Installing Razor extension from {_BUNDLED_RAZOR_EXTENSION_DIR} to {razor_dir}")
-            try:
-                razor_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(_BUNDLED_RAZOR_EXTENSION_DIR, razor_dir, dirs_exist_ok=True)
-                log.info(f"Successfully installed Razor extension to {razor_dir}")
-                return razor_dir
-            except Exception as e:
-                log.warning(f"Failed to install Razor extension: {e}. Razor support will be disabled.")
-                return None
-
         def _ensure_server_installed(self) -> tuple[str, str]:
             """
             Ensure .NET runtime and Microsoft.CodeAnalysis.LanguageServer are available.
             Returns a tuple of (dotnet_path, language_server_dll_path).
-
-            You can specify a local language server path in ls_specific_settings["csharp"]["local_language_server_path"]
-            to use a locally built language server instead of downloading one.
             """
-            # Check for local language server path override
-            local_ls_path = self._custom_settings.get("local_language_server_path")
-            if local_ls_path and isinstance(local_ls_path, str):
-                source_path = Path(local_ls_path)
-                main_dll = "Microsoft.CodeAnalysis.LanguageServer.dll"
-                if (source_path / main_dll).exists():
-                    cache_dir = Path(self._ls_resources_dir) / "local-roslyn"
-                    meta_file = Path(self._ls_resources_dir) / "local-roslyn.meta.json"
-
-                    if not self._is_local_cache_up_to_date(source_path, cache_dir, meta_file, main_dll):
-                        log.info(f"Copying local language server to cache from {local_ls_path}")
-                        cached_path = self._copy_local_to_cache(source_path, cache_dir, meta_file, main_dll)
-                        if cached_path is None:
-                            # Fallback to direct use if copy fails
-                            log.warning("Falling back to direct use of local language server")
-                            system_dotnet = shutil.which("dotnet")
-                            if system_dotnet:
-                                return system_dotnet, str(source_path / main_dll)
-                            else:
-                                log.warning("Local language server specified but dotnet not found in PATH")
-                    else:
-                        log.info(f"Using cached local language server (source: {local_ls_path})")
-
-                    # Use system dotnet for local builds
-                    system_dotnet = shutil.which("dotnet")
-                    if system_dotnet:
-                        return system_dotnet, str(cache_dir / main_dll)
-                    else:
-                        log.warning("Local language server specified but dotnet not found in PATH")
-                else:
-                    log.warning(f"Local language server path specified but DLL not found: {source_path / main_dll}")
-
             runtime_dependency_overrides = cast(list[dict[str, Any]], self._custom_settings.get("runtime_dependencies", []))
+
+            # Filter out deprecated DotNetRuntime overrides and warn users
+            filtered_overrides = []
+            for dep_override in runtime_dependency_overrides:
+                if dep_override.get("id") == "DotNetRuntime":
+                    log.warning(
+                        "The 'DotNetRuntime' runtime_dependencies override is no longer supported. "
+                        ".NET is now installed automatically via Microsoft's official install scripts. "
+                        "Please remove this override from your configuration."
+                    )
+                else:
+                    filtered_overrides.append(dep_override)
 
             log.debug("Resolving runtime dependencies")
 
             runtime_dependencies = RuntimeDependencyCollection(
                 _RUNTIME_DEPENDENCIES,
-                overrides=runtime_dependency_overrides,
+                overrides=filtered_overrides,
             )
 
             log.debug(
@@ -769,23 +359,28 @@ class CSharpLanguageServer(SolidLanguageServer):
 
             # Find the dependencies for our platform
             lang_server_dep = runtime_dependencies.get_single_dep_for_current_platform("CSharpLanguageServer")
-            dotnet_runtime_dep = runtime_dependencies.get_single_dep_for_current_platform("DotNetRuntime")
-            dotnet_path = self._ensure_dotnet_runtime(dotnet_runtime_dep)
+            dotnet_path = self._ensure_dotnet_runtime()
             server_dll_path = self._ensure_language_server(lang_server_dep)
 
             return dotnet_path, server_dll_path
 
-        def _ensure_dotnet_runtime(self, dotnet_runtime_dep: RuntimeDependency) -> str:
+        def _ensure_dotnet_runtime(self) -> str:
             """Ensure .NET runtime is available and return the dotnet executable path."""
-            # TODO: use RuntimeDependency util methods instead of custom validation/download logic
-
-            # Check if system dotnet has a supported runtime (.NET 9 or 10)
-            system_dotnet = self._check_system_dotnet_has_supported_runtime()
+            # Check if dotnet is already available on the system
+            system_dotnet = shutil.which("dotnet")
             if system_dotnet:
-                return system_dotnet
+                # Check if it's .NET 10 or compatible
+                try:
+                    result = subprocess.run([system_dotnet, "--list-runtimes"], capture_output=True, text=True, check=True)
+                    # Accept .NET 10 or higher (10.x, 11.x, etc.)
+                    if any(f"Microsoft.NETCore.App {v}." in result.stdout for v in range(10, 20)):
+                        log.info("Found system .NET 10+ runtime")
+                        return system_dotnet
+                except subprocess.CalledProcessError:
+                    pass
 
-            # Download .NET runtime using config
-            return self._ensure_dotnet_runtime_from_config(dotnet_runtime_dep)
+            # Install .NET 10 runtime using Microsoft's install script
+            return self._install_dotnet_with_script()
 
         def _ensure_language_server(self, lang_server_dep: RuntimeDependency) -> str:
             """Ensure language server is available and return the DLL path."""
@@ -797,40 +392,38 @@ class CSharpLanguageServer(SolidLanguageServer):
             server_dll = server_dir / lang_server_dep.binary_name
 
             if server_dll.exists():
-                log.info(f"Using cached Microsoft.CodeAnalysis.LanguageServer from {server_dll}")
+                log.info(f"Using cached Roslyn Language Server from {server_dll}")
                 return str(server_dll)
 
             # Download and install the language server
-            log.info(f"Downloading {package_name} version {package_version}...")
-            assert package_version is not None
-            assert package_name is not None
-            package_path = self._download_nuget_package_direct(package_name, package_version)
+            log.info(f"Downloading {package_name} version {package_version} from NuGet.org...")
+            package_path = self._download_nuget_package(lang_server_dep)
 
             # Extract and install
             self._extract_language_server(lang_server_dep, package_path, server_dir)
 
             if not server_dll.exists():
-                raise SolidLSPException("Microsoft.CodeAnalysis.LanguageServer.dll not found after extraction")
+                raise SolidLSPException("Roslyn Language Server DLL not found after extraction")
 
             # Make executable on Unix systems
             if platform.system().lower() != "windows":
                 server_dll.chmod(0o755)
 
-            log.info(f"Successfully installed Microsoft.CodeAnalysis.LanguageServer to {server_dll}")
+            log.info(f"Successfully installed Roslyn Language Server to {server_dll}")
             return str(server_dll)
 
-        def _extract_language_server(self, lang_server_dep: RuntimeDependency, package_path: Path, server_dir: Path) -> None:
+        @staticmethod
+        def _extract_language_server(lang_server_dep: RuntimeDependency, package_path: Path, server_dir: Path) -> None:
             """Extract language server files from downloaded package."""
-            dotnet_major = self._dotnet_runtime_major_version
-            extract_path = lang_server_dep.extract_path or f"lib/net{dotnet_major}.0"
+            extract_path = lang_server_dep.extract_path or "lib/net9.0"
             source_dir = package_path / extract_path
 
             if not source_dir.exists():
                 # Try alternative locations
                 for possible_dir in [
-                    package_path / "tools" / f"net{dotnet_major}.0" / "any",
-                    package_path / "lib" / f"net{dotnet_major}.0",
-                    package_path / "contentFiles" / "any" / f"net{dotnet_major}.0",
+                    package_path / "tools" / "net9.0" / "any",
+                    package_path / "lib" / "net9.0",
+                    package_path / "contentFiles" / "any" / "net9.0",
                 ]:
                     if possible_dir.exists():
                         source_dir = possible_dir
@@ -842,43 +435,28 @@ class CSharpLanguageServer(SolidLanguageServer):
             server_dir.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source_dir, server_dir, dirs_exist_ok=True)
 
-        def _download_nuget_package_direct(self, package_name: str, package_version: str) -> Path:
+        def _download_nuget_package(self, dependency: RuntimeDependency) -> Path:
             """
-            Download a NuGet package directly from the Azure NuGet feed.
+            Download a NuGet package from NuGet.org and extract it.
             Returns the path to the extracted package directory.
             """
-            azure_feed_url = "https://pkgs.dev.azure.com/azure-public/vside/_packaging/vs-impl/nuget/v3/index.json"
+            package_name = dependency.package_name
+            package_version = dependency.package_version
+            url = dependency.url
+
+            if url is None:
+                raise SolidLSPException(f"No URL specified for package {package_name} version {package_version}")
 
             # Create temporary directory for package download
             temp_dir = Path(self._ls_resources_dir) / "temp_downloads"
             temp_dir.mkdir(parents=True, exist_ok=True)
 
             try:
-                # First, get the service index from the Azure feed
-                log.debug("Fetching NuGet service index from Azure feed...")
-                with urllib.request.urlopen(azure_feed_url) as response:
-                    service_index = json.loads(response.read().decode())
-
-                # Find the package base address (for downloading packages)
-                package_base_address = None
-                for resource in service_index.get("resources", []):
-                    if resource.get("@type") == "PackageBaseAddress/3.0.0":
-                        package_base_address = resource.get("@id")
-                        break
-
-                if not package_base_address:
-                    raise SolidLSPException("Could not find package base address in Azure NuGet feed")
-
-                # Construct the download URL for the specific package
-                package_id_lower = package_name.lower()
-                package_version_lower = package_version.lower()
-                package_url = f"{package_base_address.rstrip('/')}/{package_id_lower}/{package_version_lower}/{package_id_lower}.{package_version_lower}.nupkg"
-
-                log.debug(f"Downloading package from: {package_url}")
+                log.debug(f"Downloading package from: {url}")
 
                 # Download the .nupkg file
                 nupkg_file = temp_dir / f"{package_name}.{package_version}.nupkg"
-                urllib.request.urlretrieve(package_url, nupkg_file)
+                urllib.request.urlretrieve(url, nupkg_file)
 
                 # Extract the .nupkg file (it's just a zip file)
                 package_extract_dir = temp_dir / f"{package_name}.{package_version}"
@@ -891,74 +469,88 @@ class CSharpLanguageServer(SolidLanguageServer):
                 # Clean up the nupkg file
                 nupkg_file.unlink()
 
-                log.info(f"Successfully downloaded and extracted {package_name} version {package_version}")
+                log.info(f"Successfully downloaded and extracted {package_name} version {package_version} from NuGet.org")
                 return package_extract_dir
 
             except Exception as e:
-                raise SolidLSPException(
-                    f"Failed to download package {package_name} version {package_version} from Azure NuGet feed: {e}"
-                ) from e
+                raise SolidLSPException(f"Failed to download package {package_name} version {package_version} from NuGet.org: {e}") from e
 
-        def _ensure_dotnet_runtime_from_config(self, dotnet_runtime_dep: RuntimeDependency) -> str:
+        def _install_dotnet_with_script(self, version: str = "10.0") -> str:
             """
-            Download and install .NET runtime using runtime dependency configuration.
+            Install .NET runtime using Microsoft's official install script.
             Returns the path to the dotnet executable.
-
-            Note: This method is called after system dotnet check has failed,
-            so it proceeds directly to downloading the runtime.
             """
-            # TODO: use RuntimeDependency util methods instead of custom download logic
-            dotnet_major = self._dotnet_runtime_major_version
+            dotnet_dir = Path(self._ls_resources_dir) / f"dotnet-runtime-{version}"
 
-            # Download .NET runtime using config
-            dotnet_dir = Path(self._ls_resources_dir) / f"dotnet-runtime-{dotnet_major}.0"
-            assert dotnet_runtime_dep.binary_name is not None, "Runtime dependency must have a binary_name"
-            dotnet_exe = dotnet_dir / dotnet_runtime_dep.binary_name
+            # Determine binary name based on platform
+            is_windows = platform.system().lower() == "windows"
+            dotnet_exe = dotnet_dir / ("dotnet.exe" if is_windows else "dotnet")
 
             if dotnet_exe.exists():
-                log.info(f"Using cached .NET runtime from {dotnet_exe}")
+                log.info(f"Using cached .NET {version} runtime from {dotnet_exe}")
                 return str(dotnet_exe)
 
-            # Download .NET runtime
-            log.info(f"Downloading .NET {dotnet_major} runtime...")
+            # Download and run install script
+            log.info(f"Installing .NET {version} runtime using official Microsoft install script...")
             dotnet_dir.mkdir(parents=True, exist_ok=True)
 
-            custom_dotnet_runtime_url = self._custom_settings.get("dotnet_runtime_url")
-            if custom_dotnet_runtime_url is not None:
-                log.info(f"Using custom .NET runtime url: {custom_dotnet_runtime_url}")
-                url = custom_dotnet_runtime_url
-            else:
-                url = dotnet_runtime_dep.url
-
-            archive_type = dotnet_runtime_dep.archive_type
-
-            # Download the runtime
-            download_path = dotnet_dir / f"dotnet-runtime.{archive_type}"
             try:
-                log.debug(f"Downloading from {url}")
-                urllib.request.urlretrieve(url, download_path)
+                if is_windows:
+                    # PowerShell script for Windows
+                    script_url = "https://dot.net/v1/dotnet-install.ps1"
+                    script_path = dotnet_dir / "dotnet-install.ps1"
+                    urllib.request.urlretrieve(script_url, script_path)
 
-                # Extract the archive
-                if archive_type == "zip":
-                    with zipfile.ZipFile(download_path, "r") as zip_ref:
-                        zip_ref.extractall(dotnet_dir)
+                    cmd = [
+                        "pwsh",
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(script_path),
+                        "-Version",
+                        version,
+                        "-InstallDir",
+                        str(dotnet_dir),
+                        "-Runtime",
+                        "dotnet",
+                        "-NoPath",
+                    ]
                 else:
-                    # tar.gz
-                    with tarfile.open(download_path, "r:gz") as tar_ref:
-                        tar_ref.extractall(dotnet_dir)
+                    # Bash script for Linux/macOS
+                    script_url = "https://dot.net/v1/dotnet-install.sh"
+                    script_path = dotnet_dir / "dotnet-install.sh"
+                    urllib.request.urlretrieve(script_url, script_path)
+                    script_path.chmod(0o755)
 
-                # Remove the archive
-                download_path.unlink()
+                    cmd = [
+                        "bash",
+                        str(script_path),
+                        "--version",
+                        version,
+                        "--install-dir",
+                        str(dotnet_dir),
+                        "--runtime",
+                        "dotnet",
+                        "--no-path",
+                    ]
 
-                # Make dotnet executable on Unix
-                if platform.system().lower() != "windows":
-                    dotnet_exe.chmod(0o755)
+                # Run the install script
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                log.debug(f"Install script output: {result.stdout}")
 
-                log.info(f"Successfully installed .NET {dotnet_major} runtime to {dotnet_exe}")
+                if not dotnet_exe.exists():
+                    raise SolidLSPException(f"dotnet executable not found at {dotnet_exe} after installation")
+
+                log.info(f"Successfully installed .NET {version} runtime to {dotnet_exe}")
                 return str(dotnet_exe)
 
+            except subprocess.CalledProcessError as e:
+                raise SolidLSPException(
+                    f"Failed to install .NET {version} runtime using install script: {e.stderr if e.stderr else e}"
+                ) from e
             except Exception as e:
-                raise SolidLSPException(f"Failed to download .NET {dotnet_major} runtime from {url}: {e}") from e
+                raise SolidLSPException(f"Failed to install .NET {version} runtime: {e}") from e
 
     def _get_initialize_params(self) -> InitializeParams:
         """
@@ -1016,6 +608,8 @@ class CSharpLanguageServer(SolidLanguageServer):
         )
 
     def _start_server(self) -> None:
+        indexing_complete = threading.Event()
+
         def do_nothing(params: dict) -> None:
             return
 
@@ -1114,229 +708,26 @@ class CSharpLanguageServer(SolidLanguageServer):
             # Just acknowledge the request
             return
 
-        def handle_register_capability(params: dict) -> dict:
-            """Handle client/registerCapability requests from the language server.
-
-            This is called when the server wants to dynamically register capabilities
-            for handling specific document types. For Razor, this includes registering
-            handlers for .cshtml and .razor files.
-
-            The registrations are stored in self._registered_capabilities for later use
-            by Razor Cohosting services.
-            """
-            registrations = params.get("registrations", [])
-            for reg in registrations:
-                method = reg.get("method", "unknown")
-                reg_id = reg.get("id", "no-id")
-                reg_options = reg.get("registerOptions", {})
-
-                # Store the registration in the capability table
-                self._registered_capabilities[reg_id] = {
-                    "id": reg_id,
-                    "method": method,
-                    "registerOptions": reg_options,
-                }
-
-                # Log the registration details
-                log.info(f"[DynamicRegistration] Registered: method={method}, id={reg_id}")
-
-                # Log document selector if present
-                doc_selector = reg_options.get("documentSelector", [])
-                if doc_selector:
-                    for selector in doc_selector:
-                        pattern = selector.get("pattern", "")
-                        language = selector.get("language", "")
-                        log.info(f"[DynamicRegistration]   - pattern={pattern}, language={language}")
-
-            # Must return empty dict (not None) per LSP spec
-            return {}
-
-        def handle_unregister_capability(params: dict) -> dict:
-            """Handle client/unregisterCapability requests from the language server.
-
-            This is called when the server wants to unregister previously registered capabilities.
-            """
-            unregistrations = params.get("unregisterations", [])  # Note: LSP spec uses "unregisterations" (typo in spec)
-            for unreg in unregistrations:
-                unreg_id = unreg.get("id", "no-id")
-                method = unreg.get("method", "unknown")
-
-                # Remove from capability table
-                removed = self._registered_capabilities.pop(unreg_id, None)
-                if removed:
-                    log.info(f"[DynamicRegistration] Unregistered: method={method}, id={unreg_id}")
-                else:
-                    log.warning(f"[DynamicRegistration] Attempted to unregister unknown capability: id={unreg_id}")
-
-            # Must return empty dict per LSP spec
-            return {}
+        def handle_register_capability(params: dict) -> None:
+            """Handle client/registerCapability requests."""
+            # Just acknowledge the request - we don't need to track these for now
+            return
 
         def handle_project_needs_restore(params: dict) -> None:
             return
 
         def handle_workspace_indexing_complete(params: dict) -> None:
-            self.completions_available.set()
-
-        def apply_text_edit(content: str, change: dict) -> str:
-            """Apply a single LSP text edit to content.
-
-            Args:
-                content: The current document content
-                change: A change object with 'range' (optional) and 'newText'
-
-            Returns:
-                The content after applying the edit
-
-            """
-            new_text = change.get("newText", "")
-            range_info = change.get("range")
-
-            # If no range is provided, it's a full document replacement
-            if range_info is None:
-                return new_text
-
-            # Parse range
-            start = range_info.get("start", {})
-            end = range_info.get("end", {})
-            start_line = start.get("line", 0)
-            start_char = start.get("character", 0)
-            end_line = end.get("line", 0)
-            end_char = end.get("character", 0)
-
-            # Split content into lines (preserving line endings)
-            lines = content.splitlines(keepends=True)
-
-            # Handle empty content
-            if not lines:
-                lines = [""]
-
-            # Ensure we have enough lines
-            while len(lines) <= max(start_line, end_line):
-                lines.append("")
-
-            # Calculate start and end offsets
-            start_offset = sum(len(lines[i]) for i in range(start_line)) + start_char
-            end_offset = sum(len(lines[i]) for i in range(end_line)) + end_char
-
-            # Apply the edit
-            result = content[:start_offset] + new_text + content[end_offset:]
-            return result
-
-        def handle_razor_update_csharp_buffer(params: dict) -> None:
-            """
-            Handle razor/updateCSharpBuffer notifications from Razor Language Server.
-            This caches the generated C# content for Razor files so we can provide
-            document symbols for them.
-
-            The changes can be either:
-            - Full document replacement (no range in change)
-            - Incremental edits (with range specifying start/end positions)
-            """
-            log.debug(f"[Razor] Received razor/updateCSharpBuffer: {list(params.keys())}")
-            host_document_path = params.get("hostDocumentFilePath")
-            host_document_version = params.get("hostDocumentVersion")
-            changes = params.get("changes", [])
-
-            if not host_document_path or host_document_version is None:
-                log.debug("Received razor/updateCSharpBuffer without required fields")
-                return
-
-            # Convert to URI format for consistency
-            host_document_uri = Path(host_document_path).as_uri()
-
-            # Get existing content or start fresh
-            existing = self._razor_virtual_documents.get(host_document_uri)
-            if existing:
-                _, current_content, virtual_uri = existing
-            else:
-                current_content = ""
-                # Create virtual C# document URI (matching Razor convention)
-                virtual_uri = host_document_uri + ".ide.g.cs"
-
-            # Apply changes in order
-            if changes:
-                for change in changes:
-                    current_content = apply_text_edit(current_content, change)
-
-            self._razor_virtual_documents[host_document_uri] = (
-                host_document_version,
-                current_content,
-                virtual_uri,
-            )
-
-            log.debug(
-                f"Updated Razor virtual C# document: {host_document_path} "
-                f"(version {host_document_version}, {len(current_content)} chars)"
-            )
-
-        def handle_razor_document_symbol(params: dict) -> list | None:
-            """
-            Handle razor/documentSymbol requests from Razor Language Server.
-            This is called when Razor LS needs document symbols for a .razor/.cshtml file.
-            We forward the request to get symbols from the generated C# content.
-            """
-            log.info(f"[Razor] Received razor/documentSymbol request: {params}")
-            identifier = params.get("identifier", {})
-            text_document_identifier = identifier.get("textDocumentIdentifier", {})
-            document_uri = text_document_identifier.get("uri", "")
-
-            if not document_uri:
-                log.debug("Received razor/documentSymbol without document URI")
-                return []
-
-            # Look up the virtual C# document for this Razor file
-            virtual_doc_info = self._razor_virtual_documents.get(document_uri)
-            if not virtual_doc_info:
-                log.debug(f"No virtual C# document found for {document_uri}")
-                return []
-
-            version, content, virtual_uri = virtual_doc_info
-
-            # Request document symbols from the C# language server
-            # We need to ensure the virtual document is "open" in the LSP
-            try:
-                # First, open the virtual document if not already opened
-                # This is a simplified approach - in production, we'd track open state
-                self.server.notify.did_open_text_document(
-                    {
-                        "textDocument": {
-                            "uri": virtual_uri,
-                            "languageId": "csharp",
-                            "version": version,
-                            "text": content,
-                        }
-                    }
-                )
-
-                # Now request document symbols
-                result = self.server.send.document_symbol({"textDocument": {"uri": virtual_uri}})
-
-                log.debug(f"Got {len(result) if result else 0} symbols for Razor file {document_uri}")
-
-                return result
-
-            except Exception as e:
-                log.warning(f"Failed to get document symbols for Razor file {document_uri}: {e}")
-                return []
-
-        def log_unhandled_notification(method: str, params: dict) -> None:
-            """Log unhandled notifications for debugging Razor communication."""
-            if method.startswith("razor/"):
-                log.info(f"[Razor] Unhandled notification: {method} - keys: {list(params.keys()) if params else 'None'}")
+            indexing_complete.set()
 
         # Set up notification handlers
         self.server.on_notification("window/logMessage", window_log_message)
         self.server.on_notification("$/progress", handle_progress)
         self.server.on_notification("textDocument/publishDiagnostics", do_nothing)
         self.server.on_notification("workspace/projectInitializationComplete", handle_workspace_indexing_complete)
-        self.server.on_notification("razor/updateCSharpBuffer", handle_razor_update_csharp_buffer)
-        self.server.on_notification("razor/updateHtmlBuffer", do_nothing)  # HTML buffer updates (not needed for symbols)
         self.server.on_request("workspace/configuration", handle_workspace_configuration)
         self.server.on_request("window/workDoneProgress/create", handle_work_done_progress_create)
         self.server.on_request("client/registerCapability", handle_register_capability)
-        self.server.on_request("client/unregisterCapability", handle_unregister_capability)
         self.server.on_request("workspace/_roslyn_projectNeedsRestore", handle_project_needs_restore)
-        self.server.on_request("razor/documentSymbol", handle_razor_document_symbol)
 
         log.info("Starting Microsoft.CodeAnalysis.LanguageServer process")
 
@@ -1380,19 +771,16 @@ class CSharpLanguageServer(SolidLanguageServer):
         # Open solution and project files
         self._open_solution_and_projects()
 
-        self.initialization_complete.set()
-
         log.info(
             "Microsoft.CodeAnalysis.LanguageServer initialized and ready\n"
             "Waiting for language server to index project files...\n"
             "This may take a while for large projects"
         )
 
-        if self.completions_available.wait(30):  # Wait up to 30 seconds for indexing
+        if indexing_complete.wait(30):  # Wait up to 30 seconds for indexing
             log.info("Indexing complete")
         else:
             log.warning("Timeout waiting for indexing to complete, proceeding anyway")
-            self.completions_available.set()
 
     def _force_pull_diagnostics(self, init_response: dict | InitializeResult) -> None:
         """
