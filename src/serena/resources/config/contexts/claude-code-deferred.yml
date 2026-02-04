@@ -34,6 +34,7 @@ core_tools:
   - find_file
   - get_symbols_overview    # 符號概覽（高頻使用）
   - find_symbol             # 符號搜尋（高頻使用）
+  - find_referencing_symbols # 查找符號引用
   - search_for_pattern      # 模式搜尋
   - read_memory             # 記憶讀取
   - list_memories           # 記憶列表
