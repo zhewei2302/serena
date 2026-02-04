@@ -1,7 +1,45 @@
 """
 CSharp Language Server using Roslyn Language Server (Official Roslyn-based LSP server from NuGet.org)
+
+This module supports Razor (.razor, .cshtml) files through the Razor extension when available.
+
+## Configuration Options
+
+The following options can be set in ls_specific_settings[Language.CSHARP]:
+
+    enable_razor (bool):
+        Enable Razor (.razor, .cshtml) file support through the Razor extension.
+        Default: True
+        Note: Requires matching .NET versions between language server and Razor extension.
+
+    local_language_server_path (str):
+        Path to a locally built Roslyn language server directory.
+        The directory should contain Microsoft.CodeAnalysis.LanguageServer.dll.
+        Example: "D:/GitHub/roslyn/artifacts/bin/Microsoft.CodeAnalysis.LanguageServer/Release/net10.0"
+
+    local_razor_extension_path (str):
+        Path to a locally built Razor extension directory.
+        The directory should contain Microsoft.VisualStudioCode.RazorExtension.dll.
+        Example: "D:/GitHub/razor/artifacts/bin/Microsoft.AspNetCore.Razor.LanguageServer/Release/net10.0"
+
+    runtime_dependencies (list[dict]):
+        Override default runtime dependency configurations.
+
+## Razor Document Symbol Support
+
+The Razor Language Server uses a delegation architecture for Document Symbols:
+1. Razor LS sends `razor/updateCSharpBuffer` notifications with generated C# content
+2. When Document Symbols are requested for a Razor file, Razor LS sends `razor/documentSymbol`
+   request to the client (Serena)
+3. Serena's CSharpLanguageServer receives this request, looks up the cached virtual C# document,
+   and forwards the symbol request to Roslyn C# LS
+4. The C# symbols are returned to Razor LS, which maps them back to Razor positions
+
+This implementation enables Serena's symbol analysis tools (get_symbols_overview, find_symbol, etc.)
+to work with Razor files by providing the underlying C# symbol information.
 """
 
+import json
 import logging
 import os
 import platform
@@ -9,6 +47,7 @@ import shutil
 import subprocess
 import threading
 import urllib.request
+from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
@@ -27,6 +66,9 @@ from solidlsp.util.zip import SafeZipExtractor
 from .common import RuntimeDependency, RuntimeDependencyCollection
 
 log = logging.getLogger(__name__)
+
+# Path to bundled Razor extension files (relative to this module)
+_BUNDLED_RAZOR_EXTENSION_DIR = Path(__file__).parent / "razor_extension"
 
 _RUNTIME_DEPENDENCIES = [
     RuntimeDependency(
@@ -142,10 +184,65 @@ def find_solution_or_project_file(root_dir: str) -> str | None:
     return csproj_file
 
 
+class LRUCache(OrderedDict):
+    """A simple LRU (Least Recently Used) cache based on OrderedDict.
+
+    When the cache exceeds maxsize, the least recently used items are evicted.
+    Accessing or setting an item moves it to the end (most recently used).
+    """
+
+    def __init__(self, maxsize: int = 100):
+        super().__init__()
+        self.maxsize = maxsize
+
+    def __getitem__(self, key: Any) -> Any:
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        while len(self) > self.maxsize:
+            self.popitem(last=False)
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        """Get an item without moving it to the end."""
+        try:
+            return super().__getitem__(key)
+        except KeyError:
+            return default
+
+
 class CSharpLanguageServer(SolidLanguageServer):
     """
     Provides C# specific instantiation of the LanguageServer class using the official Roslyn-based
     language server from NuGet.org.
+
+    ## Razor Support
+
+    This language server supports Razor (.razor, .cshtml) files through the Razor extension.
+    Razor support is enabled by default if the razor_extension files are available.
+
+    To disable Razor support, set ls_specific_settings["csharp"]["enable_razor"] = False.
+
+    The Razor extension provides:
+    - IntelliSense for Razor syntax
+    - Go to Definition for components and C# code
+    - Hover information
+    - Diagnostics for Razor files
+
+    ## Local Development Support
+
+    For local Roslyn/Razor development, you can specify local paths:
+    - local_language_server_path: Path to locally built Roslyn language server
+    - local_razor_extension_path: Path to locally built Razor extension
+
+    When using local paths, files are copied to a cache directory to prevent .NET process
+    locking issues, allowing you to rebuild while Serena is running.
+
+    ## Runtime Dependency Overrides
 
     You can pass a list of runtime dependency overrides in ls_specific_settings["csharp"]["runtime_dependencies"].
     This is a list of dicts, each containing at least the "id" key, and optionally "platform_id" to uniquely
@@ -176,12 +273,82 @@ class CSharpLanguageServer(SolidLanguageServer):
         # Key: (relative_file_path, line, character) -> Value: original name
         self._original_symbol_names: dict[tuple[str, int, int], str] = {}
 
+        # Razor virtual C# document cache with LRU eviction
+        # Maps razor file URI -> (version, generated C# content, virtual C# URI)
+        # Uses LRU cache to prevent unbounded memory growth
+        self._razor_virtual_documents: LRUCache = LRUCache(maxsize=100)
+
+        # Dynamic capability registration table
+        # Maps registration id -> registration details (method, registerOptions, etc.)
+        # This is used by Razor Cohosting to register handlers for .cshtml and .razor files
+        self._registered_capabilities: dict[str, dict] = {}
+
+    def get_registered_capabilities(self) -> dict[str, dict]:
+        """Get a copy of all dynamically registered capabilities.
+
+        Returns:
+            A dictionary mapping registration id to capability details.
+            Each capability contains: id, method, registerOptions
+
+        """
+        return dict(self._registered_capabilities)
+
+    def get_capabilities_for_method(self, method: str) -> list[dict]:
+        """Get all registered capabilities for a specific LSP method.
+
+        Args:
+            method: The LSP method name (e.g., 'textDocument/documentSymbol')
+
+        Returns:
+            A list of capability registrations for the given method.
+
+        """
+        return [cap for cap in self._registered_capabilities.values() if cap.get("method") == method]
+
+    def is_capability_registered(self, method: str, pattern: str | None = None) -> bool:
+        """Check if a capability is registered for a method and optional file pattern.
+
+        Args:
+            method: The LSP method name
+            pattern: Optional file pattern to check (e.g., '**/*.cshtml')
+
+        Returns:
+            True if the capability is registered.
+
+        """
+        for cap in self._registered_capabilities.values():
+            if cap.get("method") != method:
+                continue
+            if pattern is None:
+                return True
+            doc_selector = cap.get("registerOptions", {}).get("documentSelector", [])
+            for selector in doc_selector:
+                if selector.get("pattern") == pattern:
+                    return True
+        return False
+
     def _create_dependency_provider(self) -> LanguageServerDependencyProvider:
         return self.DependencyProvider(self._custom_settings, self._ls_resources_dir, self._solidlsp_settings, self.repository_root_path)
 
     @override
     def is_ignored_dirname(self, dirname: str) -> bool:
         return super().is_ignored_dirname(dirname) or dirname in ["bin", "obj", "packages", ".vs"]
+
+    @override
+    def _get_language_id_for_file(self, relative_file_path: str) -> str:
+        """Return the correct language ID for files.
+
+        Razor (.razor, .cshtml) files must be opened with language ID "aspnetcorerazor"
+        for the Razor Cohost extension to process them correctly. The Razor Cohost
+        dynamically registers handlers for document selectors with language="aspnetcorerazor".
+
+        This is critical for Razor Cohosting support - without the correct languageId,
+        requests to .cshtml files will not be routed to the Razor handlers.
+        """
+        ext = os.path.splitext(relative_file_path)[1].lower()
+        if ext in (".razor", ".cshtml"):
+            return "aspnetcorerazor"
+        return "csharp"
 
     @override
     def request_document_symbols(self, relative_file_path: str, file_buffer: Any = None) -> DocumentSymbols:
@@ -306,6 +473,120 @@ class CSharpLanguageServer(SolidLanguageServer):
             self._repository_root_path = repository_root_path
             self._dotnet_path, self._language_server_path = self._ensure_server_installed()
 
+            # Check if Razor support is enabled
+            self._enable_razor = cast(bool, custom_settings.get("enable_razor", True))
+            self._razor_extension_dir: Path | None = None
+
+            if self._enable_razor:
+                self._razor_extension_dir = self._ensure_razor_extension_installed()
+
+        @staticmethod
+        def _load_local_cache_metadata(meta_file: Path) -> dict[str, Any] | None:
+            """Load local cache metadata from JSON file."""
+            if not meta_file.exists():
+                return None
+            try:
+                with open(meta_file, encoding="utf-8") as f:
+                    return cast(dict[str, Any], json.load(f))
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning(f"Failed to load cache metadata from {meta_file}: {e}")
+                return None
+
+        @staticmethod
+        def _save_local_cache_metadata(
+            meta_file: Path,
+            source_path: Path,
+            source_mtime: float,
+        ) -> None:
+            """Save local cache metadata to JSON file."""
+            import time
+
+            metadata = {
+                "source_path": str(source_path),
+                "source_mtime": source_mtime,
+                "copied_at": time.time(),
+            }
+            try:
+                with open(meta_file, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2)
+            except OSError as e:
+                log.warning(f"Failed to save cache metadata to {meta_file}: {e}")
+
+        def _is_local_cache_up_to_date(
+            self,
+            source_path: Path,
+            cache_dir: Path,
+            meta_file: Path,
+            main_dll_name: str,
+        ) -> bool:
+            """
+            Check if the local cache is up-to-date.
+
+            Returns True if:
+            - Cache directory exists
+            - Metadata file exists and is valid
+            - Source path matches
+            - Main DLL modification time matches
+            """
+            if not cache_dir.exists():
+                return False
+
+            metadata = self._load_local_cache_metadata(meta_file)
+            if metadata is None:
+                return False
+
+            # Check if source path matches
+            if metadata.get("source_path") != str(source_path):
+                log.debug(f"Cache source path mismatch: {metadata.get('source_path')} != {source_path}")
+                return False
+
+            # Check main DLL modification time
+            main_dll = source_path / main_dll_name
+            if not main_dll.exists():
+                return False
+
+            current_mtime = main_dll.stat().st_mtime
+            cached_mtime = metadata.get("source_mtime")
+            if cached_mtime is None or current_mtime != cached_mtime:
+                log.debug(f"Cache mtime mismatch: {cached_mtime} != {current_mtime}")
+                return False
+
+            return True
+
+        def _copy_local_to_cache(
+            self,
+            source_path: Path,
+            cache_dir: Path,
+            meta_file: Path,
+            main_dll_name: str,
+        ) -> Path | None:
+            """
+            Copy local directory to cache.
+
+            Returns the cache directory path on success, None on failure.
+            """
+            main_dll = source_path / main_dll_name
+            if not main_dll.exists():
+                log.warning(f"Main DLL not found: {main_dll}")
+                return None
+
+            try:
+                # Remove existing cache directory if it exists
+                if cache_dir.exists():
+                    shutil.rmtree(cache_dir)
+
+                # Copy the directory
+                shutil.copytree(source_path, cache_dir)
+
+                # Save metadata
+                source_mtime = main_dll.stat().st_mtime
+                self._save_local_cache_metadata(meta_file, source_path, source_mtime)
+
+                return cache_dir
+            except Exception as e:
+                log.warning(f"Failed to copy local directory to cache: {e}")
+                return None
+
         def create_launch_command(self) -> list[str] | str:
             # Find solution or project file
             solution_or_project = find_solution_or_project_file(self._repository_root_path)
@@ -316,6 +597,24 @@ class CSharpLanguageServer(SolidLanguageServer):
 
             # Build command using dotnet directly
             cmd = [self._dotnet_path, self._language_server_path, "--logLevel=Information", f"--extensionLogDirectory={log_dir}", "--stdio"]
+
+            # Add Razor extension parameters if available
+            if self._razor_extension_dir and self._razor_extension_dir.exists():
+                razor_extension_dll = self._razor_extension_dir / "Microsoft.VisualStudioCode.RazorExtension.dll"
+                razor_compiler_dll = self._razor_extension_dir / "Microsoft.CodeAnalysis.Razor.Compiler.dll"
+                razor_design_time_targets = self._razor_extension_dir / "Targets" / "Microsoft.NET.Sdk.Razor.DesignTime.targets"
+
+                if razor_extension_dll.exists():
+                    cmd.append(f"--extension={razor_extension_dll}")
+                    log.info(f"Razor extension enabled: {razor_extension_dll}")
+
+                if razor_compiler_dll.exists():
+                    cmd.append(f"--razorSourceGenerator={razor_compiler_dll}")
+                    log.debug(f"Razor source generator: {razor_compiler_dll}")
+
+                if razor_design_time_targets.exists():
+                    cmd.append(f"--razorDesignTimePath={razor_design_time_targets}")
+                    log.debug(f"Razor design time targets: {razor_design_time_targets}")
 
             # The language server will discover the solution/project from the workspace root
             if solution_or_project:
@@ -331,7 +630,42 @@ class CSharpLanguageServer(SolidLanguageServer):
             """
             Ensure .NET runtime and Microsoft.CodeAnalysis.LanguageServer are available.
             Returns a tuple of (dotnet_path, language_server_dll_path).
+
+            You can specify a local language server path in ls_specific_settings["csharp"]["local_language_server_path"]
+            to use a locally built language server instead of downloading one.
             """
+            # Check for local language server path override
+            local_ls_path = self._custom_settings.get("local_language_server_path")
+            if local_ls_path and isinstance(local_ls_path, str):
+                source_path = Path(local_ls_path)
+                main_dll = "Microsoft.CodeAnalysis.LanguageServer.dll"
+                if (source_path / main_dll).exists():
+                    cache_dir = Path(self._ls_resources_dir) / "local-roslyn"
+                    meta_file = Path(self._ls_resources_dir) / "local-roslyn.meta.json"
+
+                    if not self._is_local_cache_up_to_date(source_path, cache_dir, meta_file, main_dll):
+                        log.info(f"Copying local language server to cache from {local_ls_path}")
+                        cached_path = self._copy_local_to_cache(source_path, cache_dir, meta_file, main_dll)
+                        if cached_path is None:
+                            # Fallback to direct use if copy fails
+                            log.warning("Falling back to direct use of local language server")
+                            system_dotnet = shutil.which("dotnet")
+                            if system_dotnet:
+                                return system_dotnet, str(source_path / main_dll)
+                            else:
+                                log.warning("Local language server specified but dotnet not found in PATH")
+                    else:
+                        log.info(f"Using cached local language server (source: {local_ls_path})")
+
+                    # Use system dotnet for local builds
+                    system_dotnet = shutil.which("dotnet")
+                    if system_dotnet:
+                        return system_dotnet, str(cache_dir / main_dll)
+                    else:
+                        log.warning("Local language server specified but dotnet not found in PATH")
+                else:
+                    log.warning(f"Local language server path specified but DLL not found: {source_path / main_dll}")
+
             runtime_dependency_overrides = cast(list[dict[str, Any]], self._custom_settings.get("runtime_dependencies", []))
 
             # Filter out deprecated DotNetRuntime overrides and warn users
@@ -552,6 +886,70 @@ class CSharpLanguageServer(SolidLanguageServer):
             except Exception as e:
                 raise SolidLSPException(f"Failed to install .NET {version} runtime: {e}") from e
 
+        def _ensure_razor_extension_installed(self) -> Path | None:
+            """
+            Ensure Razor extension files are available in the language server resources directory.
+            Returns the path to the Razor extension directory, or None if not available.
+
+            You can specify a local Razor extension path in ls_specific_settings["csharp"]["local_razor_extension_path"]
+            to use a locally built Razor extension instead of the bundled one.
+            """
+            # Check for local Razor extension path override
+            local_razor_path = self._custom_settings.get("local_razor_extension_path")
+            if local_razor_path and isinstance(local_razor_path, str):
+                source_path = Path(local_razor_path)
+                main_dll = "Microsoft.VisualStudioCode.RazorExtension.dll"
+                if (source_path / main_dll).exists():
+                    cache_dir = Path(self._ls_resources_dir) / "local-razor"
+                    meta_file = Path(self._ls_resources_dir) / "local-razor.meta.json"
+
+                    if not self._is_local_cache_up_to_date(source_path, cache_dir, meta_file, main_dll):
+                        log.info(f"Copying local Razor extension to cache from {local_razor_path}")
+                        cached_path = self._copy_local_to_cache(source_path, cache_dir, meta_file, main_dll)
+                        if cached_path is None:
+                            # Fallback to direct use if copy fails
+                            log.warning("Falling back to direct use of local Razor extension")
+                            return source_path
+                    else:
+                        log.info(f"Using cached local Razor extension (source: {local_razor_path})")
+
+                    return cache_dir
+                else:
+                    log.warning(f"Local Razor extension path specified but DLL not found: {source_path / main_dll}")
+
+            razor_dir = Path(self._ls_resources_dir) / "RazorExtension"
+            razor_extension_dll = razor_dir / "Microsoft.VisualStudioCode.RazorExtension.dll"
+
+            # Check if already installed
+            if razor_extension_dll.exists():
+                log.info(f"Using cached Razor extension from {razor_dir}")
+                return razor_dir
+
+            # Check if bundled Razor extension is available
+            if not _BUNDLED_RAZOR_EXTENSION_DIR.exists():
+                log.warning(
+                    f"Razor extension not found at {_BUNDLED_RAZOR_EXTENSION_DIR}. "
+                    "Razor support will be disabled. To enable Razor support, ensure the "
+                    "razor_extension directory exists with the required DLLs."
+                )
+                return None
+
+            bundled_razor_dll = _BUNDLED_RAZOR_EXTENSION_DIR / "Microsoft.VisualStudioCode.RazorExtension.dll"
+            if not bundled_razor_dll.exists():
+                log.warning(f"Bundled Razor extension DLL not found at {bundled_razor_dll}. Razor support will be disabled.")
+                return None
+
+            # Copy bundled Razor extension to resources directory
+            log.info(f"Installing Razor extension from {_BUNDLED_RAZOR_EXTENSION_DIR} to {razor_dir}")
+            try:
+                razor_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(_BUNDLED_RAZOR_EXTENSION_DIR, razor_dir, dirs_exist_ok=True)
+                log.info(f"Successfully installed Razor extension to {razor_dir}")
+                return razor_dir
+            except Exception as e:
+                log.warning(f"Failed to install Razor extension: {e}. Razor support will be disabled.")
+                return None
+
     def _get_initialize_params(self) -> InitializeParams:
         """
         Returns the initialize params for the Microsoft.CodeAnalysis.LanguageServer.
@@ -708,10 +1106,62 @@ class CSharpLanguageServer(SolidLanguageServer):
             # Just acknowledge the request
             return
 
-        def handle_register_capability(params: dict) -> None:
-            """Handle client/registerCapability requests."""
-            # Just acknowledge the request - we don't need to track these for now
-            return
+        def handle_register_capability(params: dict) -> dict:
+            """Handle client/registerCapability requests from the language server.
+
+            This is called when the server wants to dynamically register capabilities
+            for handling specific document types. For Razor, this includes registering
+            handlers for .cshtml and .razor files.
+
+            The registrations are stored in self._registered_capabilities for later use
+            by Razor Cohosting services.
+            """
+            registrations = params.get("registrations", [])
+            for reg in registrations:
+                method = reg.get("method", "unknown")
+                reg_id = reg.get("id", "no-id")
+                reg_options = reg.get("registerOptions", {})
+
+                # Store the registration in the capability table
+                self._registered_capabilities[reg_id] = {
+                    "id": reg_id,
+                    "method": method,
+                    "registerOptions": reg_options,
+                }
+
+                # Log the registration details
+                log.info(f"[DynamicRegistration] Registered: method={method}, id={reg_id}")
+
+                # Log document selector if present
+                doc_selector = reg_options.get("documentSelector", [])
+                if doc_selector:
+                    for selector in doc_selector:
+                        pattern = selector.get("pattern", "")
+                        language = selector.get("language", "")
+                        log.info(f"[DynamicRegistration]   - pattern={pattern}, language={language}")
+
+            # Must return empty dict (not None) per LSP spec
+            return {}
+
+        def handle_unregister_capability(params: dict) -> dict:
+            """Handle client/unregisterCapability requests from the language server.
+
+            This is called when the server wants to unregister previously registered capabilities.
+            """
+            unregistrations = params.get("unregisterations", [])  # Note: LSP spec uses "unregisterations" (typo in spec)
+            for unreg in unregistrations:
+                unreg_id = unreg.get("id", "no-id")
+                method = unreg.get("method", "unknown")
+
+                # Remove from capability table
+                removed = self._registered_capabilities.pop(unreg_id, None)
+                if removed:
+                    log.info(f"[DynamicRegistration] Unregistered: method={method}, id={unreg_id}")
+                else:
+                    log.warning(f"[DynamicRegistration] Attempted to unregister unknown capability: id={unreg_id}")
+
+            # Must return empty dict per LSP spec
+            return {}
 
         def handle_project_needs_restore(params: dict) -> None:
             return
@@ -727,6 +1177,7 @@ class CSharpLanguageServer(SolidLanguageServer):
         self.server.on_request("workspace/configuration", handle_workspace_configuration)
         self.server.on_request("window/workDoneProgress/create", handle_work_done_progress_create)
         self.server.on_request("client/registerCapability", handle_register_capability)
+        self.server.on_request("client/unregisterCapability", handle_unregister_capability)
         self.server.on_request("workspace/_roslyn_projectNeedsRestore", handle_project_needs_restore)
 
         log.info("Starting Microsoft.CodeAnalysis.LanguageServer process")
