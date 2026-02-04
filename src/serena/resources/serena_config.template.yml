@@ -66,7 +66,7 @@ trace_lsp_communication: False
 # ls_specific_settings:
 #   csharp:
 #     local_language_server_path: "D:/GitHub/roslyn/artifacts/bin/Microsoft.CodeAnalysis.LanguageServer/Release/net10.0"
-#     local_razor_extension_path: "D:/GitHub/razor/artifacts/bin/Microsoft.AspNetCore.Razor.LanguageServer/Release/net10.0"
+#     local_razor_extension_path: "D:/GitHub/razor/artifacts/bin/Microsoft.VisualStudioCode.RazorExtension/Release/net10.0"
 #     enable_razor: true
 ls_specific_settings: {}
 

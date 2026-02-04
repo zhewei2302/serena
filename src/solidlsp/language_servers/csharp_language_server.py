@@ -20,7 +20,7 @@ The following options can be set in ls_specific_settings[Language.CSHARP]:
     local_razor_extension_path (str):
         Path to a locally built Razor extension directory.
         The directory should contain Microsoft.VisualStudioCode.RazorExtension.dll.
-        Example: "D:/GitHub/razor/artifacts/bin/Microsoft.AspNetCore.Razor.LanguageServer/Release/net10.0"
+        Example: "D:/GitHub/razor/artifacts/bin/Microsoft.VisualStudioCode.RazorExtension/Release/net10.0"
 
     runtime_dependencies (list[dict]):
         Override default runtime dependency configurations.
