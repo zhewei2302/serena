@@ -96,7 +96,7 @@ class JetBrainsPluginClient(ToStringMixin):
         except ConnectionError:  # expected if no server is running at the port
             pass
         except Exception as e:
-            log.warning("Failed to obtain status from JetBrains plugin service at port %d: %s", e, port, exc_info=True)
+            log.warning("Failed to obtain status from JetBrains plugin service at port %d: %s", port, e, exc_info=e)
 
     @property
     def _base_url(self) -> str:
@@ -252,11 +252,14 @@ class JetBrainsPluginClient(ToStringMixin):
                 else:
                     del symbol[key]
 
-        # convert documentation and quick info from HTML to plain text (if present)
-        symbols = response_dict["symbols"]
-        for s in symbols:
-            convert_html("documentation", s)
-            convert_html("quick_info", s)
+        def convert_symbol_list(l: list) -> None:
+            for s in l:
+                convert_html("documentation", s)
+                convert_html("quick_info", s)
+                if "children" in s:
+                    convert_symbol_list(s["children"])
+
+        convert_symbol_list(response_dict["symbols"])
 
     def find_symbol(
         self,
