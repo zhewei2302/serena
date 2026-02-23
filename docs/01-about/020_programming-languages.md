@@ -30,7 +30,7 @@ Some languages require additional installations or setup steps, as noted.
 * **AL**
 * **Bash**
 * **C#**  
-  (by default, uses the Roslyn language server (language `csharp`);
+  (by default, uses the Roslyn language server (language `csharp`), requires `pwsh` ([PowerShell 7+](https://learn.microsoft.com/en-us/powershell/scripting/install/install-powershell-on-windows?view=powershell-7.5)) on Windows;
   set language to `csharp_omnisharp` to use OmiSharp instead)
 * **C/C++**  
   (by default, uses the clangd language server (language `cpp`) but we also support ccls (language `cpp_ccls`);

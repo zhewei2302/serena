@@ -39,3 +39,6 @@ DEFAULT_CORE_TOOLS: tuple[str, ...] = (
     "list_dir",  # Directory listing
     "find_file",  # File search
 )
+
+LOG_MESSAGES_BUFFER_SIZE = 2500
+"""The maximum number of log messages to keep in the buffer (for the dashboard)."""
