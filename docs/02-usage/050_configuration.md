@@ -23,7 +23,8 @@ The global configuration file allows you to change general settings and defaults
 ### Settings
 
 Some of the configurable settings include:
-  * the language backend to use by default (i.e., the JetBrains plugin or language servers)
+  * the language backend to use by default (i.e., the JetBrains plugin or language servers);
+    this can also be [overridden per project](per-project-language-backend)
   * UI settings affecting the [Serena Dashboard and GUI tool](060_dashboard.md)
   * the set of tools to enable/disable by default
   * the set of modes to use by default
@@ -210,7 +211,7 @@ ls_specific_settings:
 ```
 
 This is supported by all language servers deriving their dependency provider from  `LanguageServerDependencyProviderSinglePath`.
-Currently, this includes the following languages: `bash`, `clojure`, `cpp`, `markdown`, `php`, `php_phpactor`, `python`, `rust`, `toml`, `typescript`, `yaml`. 
+Currently, this includes the following languages: `bash`, `clojure`, `cpp`, `kotlin`, `markdown`, `php`, `php_phpactor`, `python`, `rust`, `toml`, `typescript`, `yaml`.
 We will add support for more languages over time.
 
 #### C# (Roslyn Language Server)
@@ -280,6 +281,46 @@ Notes:
 - `gopls_settings.env` values are strings.
 - `GOFLAGS` (from the environment you start Serena in) may also affect the Go build context. Prefer `buildFlags` for tags.
 - Build context changes are only picked up when `gopls` starts. After changing `gopls_settings` (or relevant env vars like `GOFLAGS`), restart the Serena process (or server) that hosts the Go language server, or use your client's "Restart language server" action if it causes `gopls` to restart.
+
+#### Java (`eclipse.jdt.ls`)
+
+The following settings are supported for the Java language server:
+
+| Setting | Default | Description |
+|---|---|---|
+| `maven_user_settings` | `~/.m2/settings.xml` | Path to Maven `settings.xml` |
+| `gradle_user_home` | `~/.gradle` | Path to Gradle user home directory |
+| `gradle_wrapper_enabled` | `false` | Use the project's Gradle wrapper (`gradlew`) instead of the bundled Gradle distribution. Enable this for projects with custom plugins or repositories. |
+| `gradle_java_home` | `null` | Path to the JDK used by Gradle. When unset, Gradle uses the bundled JRE. |
+| `use_system_java_home` | `false` | Use the system's `JAVA_HOME` environment variable for JDTLS itself. Enable this if your project requires a specific JDK vendor or version for Gradle's JDK checks. |
+
+Example for a project with custom Gradle plugins and JDK requirements:
+
+```yaml
+ls_specific_settings:
+  java:
+    gradle_wrapper_enabled: true
+    use_system_java_home: true
+```
+
+#### Kotlin
+
+Serena uses [JetBrains' Kotlin Language Server](https://github.com/Kotlin/kotlin-lsp) for Kotlin support.
+
+**Runtime Requirements:**
+
+- Java 21 or higher is required. If not found, Serena automatically downloads an appropriate JRE.
+- The Kotlin Language Server is automatically downloaded from JetBrains' CDN.
+
+**Configuration:**
+
+```yaml
+ls_specific_settings:
+  kotlin:
+    ls_path: "/path/to/kotlin-lsp.sh"        # Override the Kotlin Language Server executable
+    kotlin_lsp_version: "261.13587.0"         # Override the Kotlin Language Server version
+    jvm_options: "-Xmx4G -XX:+UseG1GC"       # JVM options (default: -Xmx2G). Set to "" to disable.
+```
 
 #### Pascal (`pasls`)
 

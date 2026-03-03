@@ -9,11 +9,15 @@ import pathspec
 from sensai.util.logging import LogTime
 from sensai.util.string import ToStringMixin
 
-from serena.config.serena_config import DEFAULT_TOOL_TIMEOUT, ProjectConfig, get_serena_managed_in_project_dir
+from serena.config.serena_config import (
+    DEFAULT_TOOL_TIMEOUT,
+    ProjectConfig,
+    get_serena_managed_in_project_dir,
+)
 from serena.constants import SERENA_FILE_ENCODING, SERENA_MANAGED_DIR_NAME
 from serena.ls_manager import LanguageServerFactory, LanguageServerManager
-from serena.text_utils import MatchedConsecutiveLines, search_files
 from serena.util.file_system import GitignoreParser, match_path
+from serena.util.text_utils import MatchedConsecutiveLines, search_files
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import Language
 from solidlsp.ls_utils import FileUtils
@@ -31,9 +35,19 @@ class MemoriesManager:
         self._encoding = SERENA_FILE_ENCODING
 
     def get_memory_file_path(self, name: str) -> Path:
-        # strip all .md from the name. Models tend to get confused, sometimes passing the .md extension and sometimes not.
+        # Strip .md extension if present
         name = name.replace(".md", "")
-        filename = f"{name}.md"
+
+        # Split by "/" to handle subdirectories
+        parts = name.split("/")
+        filename = f"{parts[-1]}.md"
+
+        if len(parts) > 1:
+            # Create subdirectory path
+            subdir = self._memory_dir / "/".join(parts[:-1])
+            subdir.mkdir(parents=True, exist_ok=True)
+            return subdir / filename
+
         return self._memory_dir / filename
 
     def load_memory(self, name: str) -> str:
@@ -49,13 +63,55 @@ class MemoriesManager:
             f.write(content)
         return f"Memory {name} written."
 
-    def list_memories(self) -> list[str]:
-        return [f.name.replace(".md", "") for f in self._memory_dir.iterdir() if f.is_file()]
+    def list_memories(self, topic: str = "") -> list[str]:
+        """
+        List memories, optionally filtered by topic.
+        """
+        memories = []
+
+        if topic:
+            # Only list memories in specified subdirectory
+            search_dir = self._memory_dir / topic.replace("/", os.sep)
+            if not search_dir.exists():
+                return []
+        else:
+            search_dir = self._memory_dir
+
+        # Recursively find all .md files
+        for md_file in search_dir.rglob("*.md"):
+            # Calculate relative path as memory name
+            rel_path = md_file.relative_to(self._memory_dir)
+            name = str(rel_path.with_suffix("")).replace(os.sep, "/")
+            memories.append(name)
+
+        # Sort alphabetically by name
+        return sorted(memories)
 
     def delete_memory(self, name: str) -> str:
         memory_file_path = self.get_memory_file_path(name)
+        if not memory_file_path.exists():
+            return f"Memory {name} not found."
         memory_file_path.unlink()
         return f"Memory {name} deleted."
+
+    def rename_memory(self, old_name: str, new_name: str) -> str:
+        """
+        Rename or move a memory file.
+        """
+        old_path = self.get_memory_file_path(old_name)
+        new_path = self.get_memory_file_path(new_name)
+
+        if not old_path.exists():
+            raise FileNotFoundError(f"Memory {old_name} not found.")
+        if new_path.exists():
+            raise FileExistsError(f"Memory {new_name} already exists.")
+
+        # Ensure target directory exists
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Move/rename the file
+        old_path.rename(new_path)
+        return f"Memory renamed from {old_name} to {new_name}."
 
 
 class Project(ToStringMixin):

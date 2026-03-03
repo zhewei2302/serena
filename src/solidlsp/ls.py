@@ -20,8 +20,8 @@ import pathspec
 from sensai.util.pickle import getstate, load_pickle
 from sensai.util.string import ToStringMixin
 
-from serena.text_utils import MatchedConsecutiveLines
 from serena.util.file_system import match_path
+from serena.util.text_utils import MatchedConsecutiveLines
 from solidlsp import ls_types
 from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.ls_exceptions import SolidLSPException
@@ -756,6 +756,8 @@ class SolidLanguageServer(ABC):
             be opened in the LS later by calling the `ensure_open_in_ls` method on the returned LSPFileBuffer.
         """
         if file_buffer is not None:
+            expected_uri = pathlib.Path(os.path.join(self.repository_root_path, relative_file_path)).as_uri()
+            assert file_buffer.uri == expected_uri, f"Inconsistency between provided {file_buffer.uri=} and {expected_uri=}"
             if open_in_ls:
                 file_buffer.ensure_open_in_ls()
             yield file_buffer
@@ -1555,7 +1557,9 @@ class SolidLanguageServer(ABC):
         else:
             return self.request_dir_overview(within_relative_path)
 
-    def request_hover(self, relative_file_path: str, line: int, column: int) -> ls_types.Hover | None:
+    def request_hover(
+        self, relative_file_path: str, line: int, column: int, file_buffer: LSPFileBuffer | None = None
+    ) -> ls_types.Hover | None:
         """
         Raise a [textDocument/hover](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_hover) request to the Language Server
         to find the hover information at the given line and column in the given file. Wait for the response and return the result.
@@ -1563,24 +1567,19 @@ class SolidLanguageServer(ABC):
         :param relative_file_path: The relative path of the file that has the hover information
         :param line: The line number of the symbol
         :param column: The column number of the symbol
+        :param file_buffer: The file buffer to use for the request. If not provided, the file will be read from disk.
+            Can be used for optimizing number of file reads in downstream code
         """
-        with self.open_file(relative_file_path):
-            uri = pathlib.Path(os.path.join(self.repository_root_path, relative_file_path)).as_uri()
-            return self._request_hover(uri, line, column)
+        with self._open_file_context(relative_file_path, file_buffer=file_buffer) as fb:
+            return self._request_hover(fb, line, column)
 
-    def _request_hover(self, uri: str, line: int, column: int) -> ls_types.Hover | None:
+    def _request_hover(self, file_buffer: LSPFileBuffer, line: int, column: int) -> ls_types.Hover | None:
         """
-        Internal method that performs the actual hover request.
-        The file must already be open when calling this method.
-        Subclasses can override this to customize hover behavior (e.g., retries).
-
-        :param uri: The URI of the file
-        :param line: The line number of the symbol
-        :param column: The column number of the symbol
+        Performs the actual hover request.
         """
         response = self.server.send.hover(
             {
-                "textDocument": {"uri": uri},
+                "textDocument": {"uri": file_buffer.uri},
                 "position": {
                     "line": line,
                     "character": column,
@@ -1988,14 +1987,22 @@ class SolidLanguageServer(ABC):
 
         return defining_symbol
 
-    def _cache_context_fingerprint(self) -> Hashable | None:
+    def _document_symbols_cache_fingerprint(self) -> Hashable | None:
         """
-        Return a fingerprint of any language-server-specific context that affects cached results.
+        Returns a fingerprint of any language server-specific aspects that result in changes
+        to the high-level document symbol information.
 
-        Subclasses may override to provide a deterministic value that changes when cached results
-        would be invalidated (e.g., build flags, environment variables).
+        Language servers must implement this method/change the return value
+          * whenever they change the `request_document_symbols` implementation to modify the returned content
+          * are reconfigured in a way that affects the returned contents (e.g. context-specific configuration
+            such as build flags or environment variables); configuration options can, in such cases, be
+            hashed together to produce a single fingerprint value.
+
+        Whenever the value changes, the document symbols cache will be invalidated and re-populated.
 
         The value must be hashable and safe for inclusion in cache version tuples.
+        E.g. use an integer, a string or a tuple of integers/strings.
+
         Returns None if no context-specific fingerprint is needed.
         """
         return None
@@ -2006,7 +2013,7 @@ class SolidLanguageServer(ABC):
 
         Incorporates cache context fingerprint if provided by the language server.
         """
-        fingerprint = self._cache_context_fingerprint()
+        fingerprint = self._document_symbols_cache_fingerprint()
         if fingerprint is not None:
             return (self.DOCUMENT_SYMBOL_CACHE_VERSION, fingerprint)
         return self.DOCUMENT_SYMBOL_CACHE_VERSION
@@ -2031,7 +2038,7 @@ class SolidLanguageServer(ABC):
 
     def _raw_document_symbols_cache_version(self) -> tuple[Hashable, ...]:
         base_version: tuple[Hashable, ...] = (self.RAW_DOCUMENT_SYMBOLS_CACHE_VERSION, self._ls_specific_raw_document_symbols_cache_version)
-        fingerprint = self._cache_context_fingerprint()
+        fingerprint = self._document_symbols_cache_fingerprint()
         if fingerprint is not None:
             return (*base_version, fingerprint)
         return base_version

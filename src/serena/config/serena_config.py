@@ -85,6 +85,11 @@ class SerenaPaths:
         """
         file containing the ID of the last read news snippet
         """
+        self.last_returned_log_file_path: str | None = None
+        """
+        the path to the last log file returned by `get_next_log_file_path`. If this is not None, the logs
+        are currently being written to this file
+        """
 
     def get_next_log_file_path(self, prefix: str) -> str:
         """
@@ -93,7 +98,8 @@ class SerenaPaths:
         """
         log_dir = os.path.join(self.serena_user_home_dir, "logs", datetime.now().strftime("%Y-%m-%d"))
         os.makedirs(log_dir, exist_ok=True)
-        return os.path.join(log_dir, prefix + "_" + datetime_tag() + ".txt")
+        self.last_returned_log_file_path = os.path.join(log_dir, prefix + "_" + datetime_tag() + ".txt")
+        return self.last_returned_log_file_path
 
     # TODO: Paths from constants.py should be moved here
 
@@ -129,27 +135,17 @@ class ToolInclusionDefinition:
 
 
 @dataclass
-class ModeSelectionDefinition:
-    base_modes: Sequence[str] | None = None
-    default_modes: Sequence[str] | None = None
+class NamedToolInclusionDefinition(ToolInclusionDefinition):
+    name: str | None = None
+
+    def __str__(self) -> str:
+        return f"ToolInclusionDefinition[{self.name}]"
 
 
 @dataclass
-class SharedConfig(ModeSelectionDefinition, ToolInclusionDefinition, ToStringMixin):
-    """Shared between SerenaConfig and ProjectConfig, the latter used to override values in the form
-    (same as in ModeSelectionDefinition).
-    The defaults here shall be none and should be set to the global default values in SerenaConfig.
-    """
-
-    symbol_info_budget: float | None = None
-
-
-class SerenaConfigError(Exception):
-    pass
-
-
-def get_serena_managed_in_project_dir(project_root: str | Path) -> str:
-    return os.path.join(project_root, SERENA_MANAGED_DIR_NAME)
+class ModeSelectionDefinition:
+    base_modes: Sequence[str] | None = None
+    default_modes: Sequence[str] | None = None
 
 
 class LanguageBackend(Enum):
@@ -170,6 +166,25 @@ class LanguageBackend(Enum):
             if backend.value.lower() == backend_str.lower():
                 return backend
         raise ValueError(f"Unknown language backend '{backend_str}': valid values are {[b.value for b in LanguageBackend]}")
+
+
+@dataclass
+class SharedConfig(ModeSelectionDefinition, ToolInclusionDefinition, ToStringMixin):
+    """Shared between SerenaConfig and ProjectConfig, the latter used to override values in the form
+    (same as in ModeSelectionDefinition).
+    The defaults here shall be none and should be set to the global default values in SerenaConfig.
+    """
+
+    symbol_info_budget: float | None = None
+    language_backend: LanguageBackend | None = None
+
+
+class SerenaConfigError(Exception):
+    pass
+
+
+def get_serena_managed_in_project_dir(project_root: str | Path) -> str:
+    return os.path.join(project_root, SERENA_MANAGED_DIR_NAME)
 
 
 @dataclass(kw_only=True)
@@ -344,6 +359,9 @@ class ProjectConfig(SharedConfig):
             if symbol_info_budget < 0:
                 raise ValueError(f"symbol_info_budget cannot be negative, got: {symbol_info_budget}")
 
+        language_backend_value = data.get("language_backend")
+        language_backend = LanguageBackend.from_str(language_backend_value) if language_backend_value else None
+
         return cls(
             project_name=data["project_name"],
             languages=languages,
@@ -355,6 +373,7 @@ class ProjectConfig(SharedConfig):
             ignore_all_files_in_gitignore=data["ignore_all_files_in_gitignore"],
             initial_prompt=data["initial_prompt"],
             encoding=data["encoding"],
+            language_backend=language_backend,
             base_modes=data["base_modes"],
             default_modes=data["default_modes"],
             symbol_info_budget=symbol_info_budget,
@@ -366,6 +385,7 @@ class ProjectConfig(SharedConfig):
         """
         d = dataclasses.asdict(self)
         d["languages"] = [lang.value for lang in self.languages]
+        d["language_backend"] = self.language_backend.value if self.language_backend is not None else None
         return d
 
     @classmethod
